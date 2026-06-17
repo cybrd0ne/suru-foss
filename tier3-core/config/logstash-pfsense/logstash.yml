@@ -1,0 +1,29 @@
+# SURU — Logstash pfSense-specific configuration
+# Compatible with Logstash 9.x (OSS)
+
+# API / monitoring endpoint — bind to loopback only (SEC-078). The endpoint is
+# unauthenticated; the documented healthcheck runs `docker exec ... curl
+# http://localhost:9600`, which works on loopback. Do NOT bind 0.0.0.0 — that
+# exposes node stats / pipeline graph / hot-threads to any co-resident container.
+api.http.host: "127.0.0.1"
+api.http.port: 9600
+
+path.logs: /usr/share/logstash/logs
+path.data: /usr/share/logstash/data
+
+# On-disk DLQ disabled (SEC-079). The intended quarantine mechanism is the
+# explicit pipeline-to-pipeline `send_to => quarantine-pipe` routing consumed by
+# 90-deadletter.conf — NOT the on-disk DLQ, which nothing drains. Left enabled it
+# grew write-only to its 1 GB cap (feeding the known disk-fill issue) with no
+# consumer. If post-output OpenSearch 400 rejections ever need capture, add a real
+# `dead_letter_queue {}` input pipeline that drains to a quarantine index (see
+# SEC-053) rather than re-enabling write-only growth.
+dead_letter_queue.enable: false
+
+config.reload.automatic: true
+config.reload.interval: 30s
+
+log.level: info
+pipeline.ordered: auto
+queue.type: persisted
+queue.max_bytes: 2gb

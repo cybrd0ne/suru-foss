@@ -1,0 +1,24 @@
+# SURU Platform — suricata-update config (canonical source)
+# This file is the source of truth; copied verbatim to
+# tier1-perimeter/rendered/<platform>/suricata/update.yaml by
+# tier2-telemetry/build/lib/render-suricata.sh.
+#
+# Suricata on pfSense / FreeBSD lives under /usr/local/etc/suricata,
+# not /etc/suricata. URL pinned to the 7.0 branch — ET Open publishes
+# per-major.minor tarballs that track patch versions; bump when upgrading
+# the Suricata package family.
+#
+# Validate on router:
+#   sudo suricata-update --no-reload \
+#     --suricata-conf /usr/local/etc/suricata/suricata.yaml
+#
+# SOHO profile: ET Open enabled, high-FP and enterprise categories disabled.
+# MITRE ATT&CK covered: T1071, T1566, T1595, T1046, T1110, T1059
+
+urls:
+  - https://rules.emergingthreats.net/open/suricata-7.0/emerging.rules.tar.gz
+
+disable-conf: /usr/local/etc/suricata/disable.conf
+enable-conf:  /usr/local/etc/suricata/enable.conf
+
+output: /usr/local/etc/suricata/rules/suricata.rules

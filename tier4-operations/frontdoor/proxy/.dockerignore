@@ -1,0 +1,7 @@
+# Keep the build context minimal and secret-free. The Dockerfile performs no
+# COPY — it only layers apache2-utils onto the base image — so nothing here is
+# needed at build time. Everything (config, certs, scripts) is bind-mounted at
+# runtime via compose.yaml. Excluding these keeps private keys and env out of
+# the build context entirely.
+*
+!Dockerfile

@@ -1,0 +1,41 @@
+# SURU — Logstash main configuration
+# Compatible with Logstash 9.x (OSS)
+# Breaking change from 8.x: http.* settings removed, replaced by api.*
+# Ref: https://www.elastic.co/docs/release-notes/logstash/breaking-changes
+# Validate: docker exec suru.t3.ingestion.logstash-opnsense logstash --config.test_and_exit
+
+# ── API / Monitoring endpoint ─────────────────────────────────────────────────
+# http.host / http.port were REMOVED in Logstash 9.0 — use api.* instead.
+# Bind to loopback only (SEC-078): the API is unauthenticated and the healthcheck
+# does `docker exec ... curl http://localhost:9600`, which works on 127.0.0.1.
+# Binding 0.0.0.0 exposes node stats / pipeline graph / hot-threads to any
+# co-resident container.
+api.http.host: "127.0.0.1"
+api.http.port: 9600
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+path.logs: /usr/share/logstash/logs
+path.data: /usr/share/logstash/data
+
+# ── Dead Letter Queue ─────────────────────────────────────────────────────────
+# Disabled (SEC-079): the on-disk DLQ had no consumer pipeline, so it grew
+# write-only to its cap. Quarantine is handled by the explicit
+# `send_to => quarantine-pipe` routing (90-deadletter.conf), not the on-disk DLQ.
+dead_letter_queue.enable: false
+
+# ── Persistent queue (SEC-080) ────────────────────────────────────────────────
+# Without a global queue.type the opnsense pipelines defaulted to the in-memory
+# queue — on an OOM/crash (the documented ~97%-memory condition) all in-flight
+# events are lost. Persist to disk, bounded for the constrained SOHO disk.
+queue.type: persisted
+queue.max_bytes: 1gb
+
+# ── Pipeline config reload ────────────────────────────────────────────────────
+config.reload.automatic: true
+config.reload.interval: 30s
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+log.level: info
+
+# NOTE: xpack.* settings must NOT be present in logstash-oss — X-Pack is
+# not included. Monitoring is provided via the native API (api.http.port: 9600).

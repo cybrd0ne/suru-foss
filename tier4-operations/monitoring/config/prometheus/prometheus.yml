@@ -1,0 +1,59 @@
+# Prometheus scrape configuration for SURU SIEM
+# Validate: promtool check config prometheus.yml
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: suru
+    tier: tier4
+
+rule_files:
+  # Must match the compose mount target (/etc/suru-prometheus/alerts); the old
+  # /etc/prometheus/alerts path did not exist in the container, so no alert rules
+  # ever loaded.
+  - /etc/suru-prometheus/alerts/*.yml
+
+scrape_configs:
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: opensearch
+    metrics_path: /_prometheus/metrics
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    basic_auth:
+      username: admin
+      password_file: /run/secrets/opensearch_password
+    static_configs:
+      - targets: ["suru-t3-datalake-opensearch:9200"]
+        labels:
+          service: opensearch
+
+  - job_name: logstash
+    metrics_path: /_node/stats
+    static_configs:
+      - targets: ["suru-t3-ingestion-logstash-opnsense:9600"]
+        labels:
+          service: logstash
+
+  - job_name: influxdb
+    static_configs:
+      - targets: ["suru-t4-monitoring-influxdb:8086"]
+        labels:
+          service: influxdb
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          service: host
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+

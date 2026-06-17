@@ -1,0 +1,27 @@
+# SURU — Tier3 / ingestion / logstash
+# Base:   docker.elastic.co/logstash/logstash-oss:9.3.1  (Apache 2.0, no X-Pack)
+#         Latest stable multi-arch (amd64 + arm64) as of Feb 2026.
+# Plugin: logstash-output-opensearch 2.0.4
+#         Required for OpenSearch 3.x (Logstash 8.x+ column in compatibility matrix).
+#         With ECS v8 compatibility setting in pipeline output blocks.
+#
+# The opensearchproject/logstash-oss-with-opensearch-output-plugin image was
+# discontinued in October 2023. Install the plugin on the official Elastic OSS base.
+# Ref: https://opensearch.org/blog/discontinuing-custom-logstash-distribution/
+# Ref: https://github.com/opensearch-project/logstash-output-opensearch
+#
+# Validate: docker build --no-cache -t suru-t3-ingestion-logstash:9.3.1 .
+
+ARG LOGSTASH_VERSION=9.3.1
+FROM docker.elastic.co/logstash/logstash-oss:${LOGSTASH_VERSION}
+
+USER root
+
+# Install logstash-output-opensearch plugin.
+# Compatible with OpenSearch 1.x / 2.x / 3.x when ecs_compatibility => "v8"
+# is set in each pipeline output block.
+RUN /usr/share/logstash/bin/logstash-plugin install \
+      --version 2.0.4 \
+      logstash-output-opensearch
+
+USER logstash

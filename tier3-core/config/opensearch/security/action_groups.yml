@@ -1,0 +1,5 @@
+---
+# SURU OpenSearch Security — Action groups (defaults, no customizations needed)
+_meta:
+  type: "actiongroups"
+  config_version: 2

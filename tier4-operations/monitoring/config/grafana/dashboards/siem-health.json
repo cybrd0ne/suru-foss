@@ -1,0 +1,111 @@
+{
+  "uid": "suru-siem-health",
+  "title": "SURU \u2014 SIEM Infrastructure Health",
+  "tags": [
+    "suru",
+    "infrastructure",
+    "siem"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "id": 1,
+      "title": "OpenSearch Status",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "up{job='opensearch'}",
+          "legendFormat": "OpenSearch"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "Logstash Status",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "up{job='logstash'}",
+          "legendFormat": "Logstash"
+        }
+      ],
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 3,
+      "title": "OpenSearch Disk Usage",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "100 - (opensearch_fs_total_available_in_bytes / opensearch_fs_total_total_in_bytes * 100)",
+          "legendFormat": "Disk Used %"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      }
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+# Prometheus alerting rules for SURU SIEM infrastructure
+groups:
+  - name: siem_infrastructure
+    rules:
+
+      - alert: OpenSearchDown
+        expr: up{job="opensearch"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          tier: tier3
+        annotations:
+          summary: "OpenSearch node is DOWN"
+          description: "OpenSearch node {{ $labels.instance }} has been unreachable for 2 minutes."
+
+      - alert: LogstashDown
+        expr: up{job="logstash"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          tier: tier3
+        annotations:
+          summary: "Logstash is DOWN"
+          description: "Logstash pipeline ingestion is unreachable."
+
+      - alert: OpenSearchHighDiskUsage
+        expr: >
+          opensearch_fs_total_available_in_bytes /
+          opensearch_fs_total_total_in_bytes < 0.15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OpenSearch disk usage above 85%"
+          description: "Available disk below 15% on {{ $labels.instance }}."

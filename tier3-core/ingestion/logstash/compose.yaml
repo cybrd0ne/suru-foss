@@ -1,0 +1,301 @@
+# SURU — Tier3 / Group: ingestion  /  Engine: logstash
+# =============================================================================
+# Multi-profile Logstash deployment
+# =============================================================================
+# Each logstash config profile under tier3-core/config/logstash-<name>/
+# maps to a Docker Compose profile of the same name and a dedicated container.
+#
+# Profile → platform mapping (driven by ROUTER_PLATFORM in tier3-core/.env):
+#   pfsense  → logstash-pfsense  (mTLS syslog-ng TCP input, pfSense pipelines)
+#   opnsense → logstash-opnsense (syslog UDP input, OPNsense pipelines)
+#
+# Usage (via deploy.sh — preferred):
+#   deploy.sh start  --group ingestion/logstash                        # all profiles
+#   deploy.sh start  --group ingestion/logstash --logstash-profile pfsense
+#   deploy.sh start  --group ingestion/logstash --logstash-profile opnsense
+#   deploy.sh deploy --group ingestion/logstash --logstash-profile pfsense
+#
+# Direct docker compose usage:
+#   docker compose --profile opnsense up -d      # only logstash-opnsense
+#   docker compose --profile pfsense up -d       # only logstash-pfsense
+#   docker compose --profile opnsense --profile pfsense up -d   # both
+#   docker compose up -d                         # all (no profile filter)
+#
+# Adding a new logstash config (e.g. logstash-zeek):
+#   1. Create tier3-core/config/logstash-zeek/ with logstash.yml,
+#      pipelines.yml, and pipelines/ sub-directory.
+#   2. Copy and adapt the logstash-pfsense service block below.
+#   3. Assign a new profile name (zeek), unique ports, and volume names.
+#   4. Add "zeek" to LOGSTASH_PROFILES in deploy.sh.
+#
+# Container naming: suru.t<N>.<group>.<function>
+#
+# Port allocation:
+#   logstash-opnsense : 5044/tcp (beats) · 5140/udp · 5141/udp · 5142/udp · 9601/tcp (metrics)
+#   logstash-pfsense  : 5045/tcp (beats) · 5143/udp · 5144/udp · 5145/udp · 9602/tcp (metrics)
+#
+# Volume ownership:
+#   Named Docker volumes are created root:root. Logstash runs as uid 1000.
+#   volume-init (busybox) chowns all data volumes to 1000:1000 before Logstash starts.
+#
+# Validate: docker compose config
+
+name: suru-t3-ingestion
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+# ── Re-usable Logstash service template ──────────────────────────────────────
+# Common environment, healthcheck, network, resource limits shared by all
+# logstash-<profile> service blocks via YAML anchors.
+x-logstash-common: &logstash-common
+  image: docker.elastic.co/logstash/logstash-oss:9.3.1@sha256:a92330f6ec2f9d664af457b6ca8ff87f765c4eded7bb3e3a8fffdd780a35e36a
+  platform: ${DOCKER_PLATFORM:-linux/amd64}
+  restart: unless-stopped
+  user: "1000:1000"
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+  environment:
+    OPENSEARCH_HOST: suru-t3-datalake-opensearch
+    OPENSEARCH_PORT: "9200"
+    OPENSEARCH_USER: "${LOGSTASH_OPENSEARCH_USER}"
+    OPENSEARCH_PASSWORD: "${LOGSTASH_OPENSEARCH_PASSWORD}"
+    LS_JAVA_OPTS: "${LOGSTASH_JAVA_OPTS:--Xms512m -Xmx512m}"
+    # MaxMind GeoLite2 DB paths consumed by the geoip enrichment pipeline
+    # (35-geoip.conf) and the entrypoint's geoip-pipeline selector. The DBs are
+    # mounted (pfsense profile) from the geoipupdate-populated `geoip` volume;
+    # absent when no MAXMIND creds are set -> geoip pipeline runs passthrough.
+    GEOIP_CITY_DB: "/usr/share/logstash/geoip/GeoLite2-City.mmdb"
+    GEOIP_ASN_DB: "/usr/share/logstash/geoip/GeoLite2-ASN.mmdb"
+  entrypoint: ["/bin/sh", "/suru/logstash-entrypoint.sh"]
+  networks:
+    - siem-internal
+  healthcheck:
+    test:
+      - CMD-SHELL
+      - curl -sf http://localhost:9600/_node/stats | grep -q '"status":"green"'
+    interval: 30s
+    timeout: 10s
+    retries: 6
+    start_period: 120s
+  logging: *default-logging
+  deploy:
+    resources:
+      limits:
+        memory: 2G
+      reservations:
+        memory: 512M
+
+networks:
+  siem-internal:
+    name: suru-t3-core-internal
+    external: true
+
+volumes:
+  # ── logstash-opnsense ────────────────────────────────────────────────────────
+  logstash-opnsense-data:
+    name: suru-t3-ingestion-logstash-opnsense-data
+    labels:
+      project: suru
+      group: ingestion
+      component: logstash-opnsense
+
+  logstash-opnsense-dead-letter:
+    name: suru-t3-ingestion-logstash-opnsense-dead-letter
+    labels:
+      project: suru
+      group: ingestion
+      component: logstash-opnsense
+
+  # ── logstash-pfsense ─────────────────────────────────────────────────────────
+  logstash-pfsense-data:
+    name: suru-t3-ingestion-logstash-pfsense-data
+    labels:
+      project: suru
+      group: ingestion
+      component: logstash-pfsense
+
+  logstash-pfsense-dead-letter:
+    name: suru-t3-ingestion-logstash-pfsense-dead-letter
+    labels:
+      project: suru
+      group: ingestion
+      component: logstash-pfsense
+
+  # Shared MaxMind GeoLite2 DBs (City + ASN). Populated by the geoipupdate
+  # init service when MaxMind creds are set; mounted read-only into Logstash.
+  geoip:
+    name: suru-t3-ingestion-geoip
+    labels:
+      project: suru
+      group: ingestion
+      component: geoip
+
+services:
+
+  # ── Volume Init — opnsense ───────────────────────────────────────────────────
+  # Chowns logstash-opnsense volumes to uid 1000 before the container starts.
+  # Runs once; re-run via: docker compose run --rm suru.t3.ingestion.volume-init-opnsense
+  suru.t3.ingestion.volume-init-opnsense:
+    image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+    container_name: suru.t3.ingestion.volume-init-opnsense
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    profiles: [opnsense]
+    volumes:
+      - logstash-opnsense-data:/mnt/data
+      - logstash-opnsense-dead-letter:/mnt/dead_letter_queue
+    command: >
+      sh -c "
+        chown -R 1000:1000 /mnt/data /mnt/dead_letter_queue
+        chmod 0750 /mnt/data /mnt/dead_letter_queue
+        echo '[volume-init-opnsense] volumes ownership set to 1000:1000'
+      "
+    networks: []
+    logging: *default-logging
+
+  # ── Logstash — opnsense ──────────────────────────────────────────────────────
+  # Container: suru.t3.ingestion.logstash-opnsense
+  # Config:    tier3-core/config/logstash-opnsense/
+  # Ports:     5044/tcp (beats), 5140/udp, 5141/udp, 5142/udp, 9601/tcp (metrics)
+  suru.t3.ingestion.logstash-opnsense:
+    <<: *logstash-common
+    container_name: suru.t3.ingestion.logstash-opnsense
+    hostname: suru-t3-ingestion-logstash-opnsense
+    profiles: [opnsense]
+    depends_on:
+      suru.t3.ingestion.volume-init-opnsense:
+        condition: service_completed_successfully
+    # No host port mappings — Beats / syslog / metrics-API are reachable only
+    # via the Tier 4 frontdoor proxy. Beats and syslog enter through nginx
+    # stream listeners (host ports 5044, 5140-5142); the metrics API enters
+    # through the HTTP `/ingestion` route. See
+    # tier4-operations/frontdoor/proxy/config/routes.yaml.
+    volumes:
+      - logstash-opnsense-data:/usr/share/logstash/data
+      - logstash-opnsense-dead-letter:/usr/share/logstash/dead_letter_queue
+      # Config — logstash-opnsense profile
+      - ../../config/logstash-opnsense/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ../../config/logstash-opnsense/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - ../../config/logstash-opnsense/pipelines/:/usr/share/logstash/pipeline/:ro
+      # TLS certs
+      - ../../certs/logstash.pem:/usr/share/logstash/certs/logstash.pem:ro
+      - ../../certs/logstash-key.pem:/usr/share/logstash/certs/logstash-key.pem:ro
+      - ../../certs/root-ca.pem:/usr/share/logstash/certs/root-ca.pem:ro
+      # Plugin bootstrap entrypoint
+      - ../../scripts/logstash-entrypoint.sh:/suru/logstash-entrypoint.sh:ro
+
+  # ── Volume Init — pfsense ───────────────────────────────────────────────────
+  suru.t3.ingestion.volume-init-pfsense:
+    image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+    container_name: suru.t3.ingestion.volume-init-pfsense
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    profiles: [pfsense]
+    volumes:
+      - logstash-pfsense-data:/mnt/data
+      - logstash-pfsense-dead-letter:/mnt/dead_letter_queue
+    command: >
+      sh -c "
+        chown -R 1000:1000 /mnt/data /mnt/dead_letter_queue
+        chmod 0750 /mnt/data /mnt/dead_letter_queue
+        echo '[volume-init-pfsense] volumes ownership set to 1000:1000'
+      "
+    networks: []
+    logging: *default-logging
+
+  # ── GeoIP DB updater (MaxMind GeoLite2) ──────────────────────────────────────
+  # One-shot init: downloads GeoLite2-City + GeoLite2-ASN into the `geoip` volume
+  # using MaxMind creds from .env, then exits. ALWAYS exits 0 — if creds are
+  # unset or the download fails, it logs and skips so it never blocks Logstash
+  # (the entrypoint then runs the geoip pipeline in passthrough mode). Re-run to
+  # refresh: docker compose run --rm suru.t3.ingestion.geoipupdate
+  suru.t3.ingestion.geoipupdate:
+    image: ghcr.io/maxmind/geoipupdate:v7.1.1
+    container_name: suru.t3.ingestion.geoipupdate
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    restart: "no"
+    user: root  # writes DBs to the volume; files are world-readable (644) for uid 1000
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    profiles: [pfsense]
+    environment:
+      MAXMIND_ACCOUNT_ID: "${MAXMIND_ACCOUNT_ID:-}"
+      MAXMIND_LICENSE_KEY: "${MAXMIND_LICENSE_KEY:-}"
+      MAXMIND_EDITION_IDS: "${MAXMIND_EDITION_IDS:-GeoLite2-City GeoLite2-ASN}"
+    # Self-contained: gate on creds, generate GeoIP.conf at runtime ($$ = runtime
+    # shell expansion so no secret lands in the compose file), download, never fail.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        if [ -z "$${MAXMIND_ACCOUNT_ID}" ] || [ -z "$${MAXMIND_LICENSE_KEY}" ]; then
+          echo "[geoipupdate] MAXMIND_ACCOUNT_ID/LICENSE_KEY not set — skipping GeoLite2 download (geoip disabled)";
+          exit 0;
+        fi;
+        printf 'AccountID %s\nLicenseKey %s\nEditionIDs %s\n' "$${MAXMIND_ACCOUNT_ID}" "$${MAXMIND_LICENSE_KEY}" "$${MAXMIND_EDITION_IDS}" > /tmp/GeoIP.conf;
+        geoipupdate -f /tmp/GeoIP.conf -d /usr/share/GeoIP -v || echo "[geoipupdate] download failed — geoip will stay disabled";
+        ls -la /usr/share/GeoIP || true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    volumes:
+      - geoip:/usr/share/GeoIP
+    networks:
+      - siem-internal
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ── Logstash — pfsense ──────────────────────────────────────────────────────
+  # Container: suru.t3.ingestion.logstash-pfsense
+  # Config:    tier3-core/config/logstash-pfsense/
+  # Ports:     5045/tcp (beats), 5143/udp, 5144/udp, 5145/udp, 9602/tcp (metrics)
+  suru.t3.ingestion.logstash-pfsense:
+    <<: *logstash-common
+    container_name: suru.t3.ingestion.logstash-pfsense
+    hostname: suru-t3-ingestion-logstash-pfsense
+    profiles: [pfsense]
+    depends_on:
+      suru.t3.ingestion.volume-init-pfsense:
+        condition: service_completed_successfully
+      suru.t3.ingestion.geoipupdate:
+        condition: service_completed_successfully
+    # No host port mappings — frontdoor stream listeners on host ports
+    # 5045, 5143-5145 forward to container ports 5044, 5140-5142 respectively.
+    # Metrics API enters through the frontdoor (separate route per profile
+    # is a future routes.yaml entry).
+    volumes:
+      - logstash-pfsense-data:/usr/share/logstash/data
+      - logstash-pfsense-dead-letter:/usr/share/logstash/dead_letter_queue
+      # MaxMind GeoLite2 DBs (read-only) — consumed by 35-geoip.conf
+      - geoip:/usr/share/logstash/geoip:ro
+      # Config — logstash-pfsense profile
+      - ../../config/logstash-pfsense/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ../../config/logstash-pfsense/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - ../../config/logstash-pfsense/pipelines/:/usr/share/logstash/pipeline/:ro
+      # TLS certs
+      - ../../certs/logstash.pem:/usr/share/logstash/certs/logstash.pem:ro
+      - ../../certs/logstash-key.pem:/usr/share/logstash/certs/logstash-key.pem:ro
+      - ../../certs/root-ca.pem:/usr/share/logstash/certs/root-ca.pem:ro
+      # Plugin bootstrap entrypoint
+      - ../../scripts/logstash-entrypoint.sh:/suru/logstash-entrypoint.sh:ro

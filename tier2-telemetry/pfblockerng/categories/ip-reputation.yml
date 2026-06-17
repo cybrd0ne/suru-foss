@@ -1,0 +1,26 @@
+# SURU Platform — pfBlockerNG IP Reputation Feed Policy
+# SOURCE OF TRUTH: tier2-telemetry/pfblockerng/categories/
+# Consumed by: tier2-telemetry/build/lib/render-pfblockerng.sh
+# MITRE ATT&CK: TA0011 C2 — T1071, T1583
+---
+feeds:
+  - aliasname: SURU_Emerging_Threats_IP
+    action: "Deny Both"
+    url: "https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt"
+    format: CIDR
+    state: Enabled
+    update: Daily
+    priority: 5
+    desc: "Emerging Threats known-bad IP ranges"
+    mitre: [T1071, T1583]
+
+  - aliasname: SURU_Abuse_IPDB
+    action: "Deny Both"
+    url: "https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=90"
+    format: CIDR
+    state: Disabled
+    update: Daily
+    priority: 5
+    desc: "AbuseIPDB high-confidence IPs (requires API key)"
+    mitre: [T1071, T1110]
+    note: "Enable and configure API key before activating"

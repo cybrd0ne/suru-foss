@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!-- pfSense baseline config template — managed by SURU -->
+<!-- Replace <PLACEHOLDER> values before applying -->
+<pfsense>
+  <version>21.7</version>
+  <system>
+    <hostname>fw01</hostname>
+    <domain>internal.suru.local</domain>
+    <!-- CIS Benchmark: disable unneeded services -->
+    <ssh><enabled>enabled</enabled><port>22</port></ssh>
+  </system>
+  <!-- [STUB: pfBlockerNG XML export block] -->
+  <!-- [STUB: Suricata interface config block] -->
+</pfsense>

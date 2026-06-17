@@ -1,0 +1,93 @@
+# =============================================================================
+# SURU — Tier 4 Frontdoor: routing manifest
+# =============================================================================
+# Single source of truth for what the frontdoor exposes to the LAN. Edit this
+# file when adding or removing routes, then re-render the nginx include files
+# with:
+#
+#     bash tier4-operations/frontdoor/proxy/scripts/render-routes.sh
+#
+# Output lands in config/http/ (HTTP server blocks) and config/stream/
+# (TCP/UDP stream listeners). Re-rendered files are committed alongside this
+# manifest so the running stack is reproducible without invoking the script.
+#
+# Fields:
+#   http_routes[]
+#     path     — URL path prefix served by the frontdoor (e.g. /, /grafana).
+#                Must be unique; longer prefixes take precedence in nginx.
+#     upstream — container hostname inside the internal Docker networks
+#                (e.g. suru-t3-datalake-dashboards). Must match a hostname or
+#                network alias reachable from the frontdoor container.
+#     port     — container port on that upstream.
+#     scheme   — http | https — backend protocol. Use https for OpenSearch.
+#     auth     — basic | none — whether the frontdoor enforces basic auth.
+#                The htpasswd file is generated from .env on first start.
+#     comment  — free-form, surfaced in the rendered .conf file's header.
+#
+#   stream_routes[]   (nginx stream module — non-HTTP traffic)
+#     listen   — host port + protocol (e.g. 5044/tcp, 5140/udp)
+#     upstream — container_hostname:container_port
+#     comment  — free-form, surfaced in the rendered .conf file's header.
+#
+# Adding a new container:
+#   1. Append an http_routes or stream_routes entry below.
+#   2. Re-run scripts/render-routes.sh.
+#   3. Commit routes.yaml + the regenerated config/{http,stream}/ files.
+#   4. Reload the frontdoor:
+#         docker exec suru.t4.frontdoor.proxy nginx -s reload
+# =============================================================================
+
+http_routes:
+  # The frontdoor's `/` is served by nginx directly from the shared
+  # `frontdoor-content` volume populated by suru.t4.frontdoor.content
+  # (git-sync of cybrd0ne/suru-frontdoor-content). The static index
+  # page lists every route below. No entry for `/` appears here.
+
+  - path: /dashboards/
+    upstream: suru-t3-datalake-dashboards
+    port: 5601
+    scheme: https
+    auth: none
+    comment: "OpenSearch Dashboards — OSD handles its own auth (form login + session cookie)"
+
+  - path: /ingestion
+    upstream: suru-t3-ingestion-logstash-pfsense
+    port: 9600
+    scheme: http
+    auth: basic
+    strip_prefix: true
+    comment: "Logstash monitoring API (pfsense profile) — pipeline + node stats"
+
+  - path: /grafana
+    upstream: suru-t4-monitoring-grafana
+    port: 3000
+    scheme: http
+    auth: basic
+    comment: "Grafana — Tier-4 monitoring dashboards"
+
+  - path: /prometheus
+    upstream: suru-t4-monitoring-prometheus
+    port: 9090
+    scheme: http
+    auth: basic
+    comment: "Prometheus — Tier-4 metrics + alert UI"
+
+  - path: /api/search
+    upstream: suru-t3-datalake-opensearch
+    port: 9200
+    scheme: https
+    auth: none
+    strip_prefix: true
+    rate_limit: true
+    comment: "OpenSearch REST API — query/index operations (OpenSearch handles its own auth)"
+
+stream_routes:
+  # NOTE: the port 443 SNI passthrough (syslog.suru.local → logstash-pfsense:5140)
+  # is hand-authored in config/nginx.conf (ssl_preread cannot be expressed by
+  # the render-routes.sh flat listen/proxy_pass model). It is intentionally
+  # absent from this manifest.
+
+  # ── Beats (TLS) input ──────────────────────────────────────────────────────
+  - listen: 5044/tcp
+    upstream: suru-t3-ingestion-logstash-pfsense:5044
+    comment: "Beats input — logstash-pfsense"

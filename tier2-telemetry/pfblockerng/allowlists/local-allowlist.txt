@@ -1,0 +1,10 @@
+# SURU Platform — pfBlockerNG Local Allowlist
+# Domains and IPs that must never be blocked regardless of feed matches.
+# One entry per line. Comments start with #.
+# Consumed by: tier2-telemetry/build/lib/render-pfblockerng.sh
+
+# Example: internal update server
+# updates.internal.suru.local
+
+# Example: trusted external service that appears in block feeds
+# safe.example.com

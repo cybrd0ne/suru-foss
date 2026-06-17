@@ -1,0 +1,11 @@
+#fields	indicator	indicator_type	meta.source	meta.desc	meta.url	meta.do_notice
+# SURU IOC Feed — Zeek Intelligence Framework format
+# Reference: https://docs.zeek.org/en/master/frameworks/intel.html
+# MITRE ATT&CK: TA0011 C2 — T1071, T1568
+#
+# Add entries below. Format:
+# <value>\t<Intel::DOMAIN|Intel::ADDR|Intel::FILE_HASH>\tSURU\t<desc>\t-\tT
+#
+# Example entries (commented out — replace with real IOCs):
+# evil.example.com	Intel::DOMAIN	SURU	Known C2 domain T1071	-	T
+# 198.51.100.42	Intel::ADDR	SURU	Known C2 IP T1071	-	T

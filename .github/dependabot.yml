@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /tier3-core/ingestion/logstash
+    schedule: { interval: weekly }
+  - package-ecosystem: terraform
+    directory: /terraform/environments/dev
+    schedule: { interval: weekly }

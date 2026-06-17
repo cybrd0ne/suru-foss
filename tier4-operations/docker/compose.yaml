@@ -1,0 +1,48 @@
+# SURU — Tier 4 / Docker host configuration
+# Deploys daemon.json and buildkitd.toml to the local Docker host.
+# Run via: bash tier4-operations/scripts/deploy.sh configure-host
+#
+# This compose file is self-contained — no external networks required.
+# It runs once as a one-shot service; Docker must be restarted afterward
+# for changes to take effect (live-restore=true keeps containers alive).
+
+name: suru-t4-docker-host
+
+services:
+
+  # ── Docker host init ─────────────────────────────────────────────────────────
+  # Copies daemon.json and buildkitd.toml to /etc/docker and /etc/buildkit
+  # on the host filesystem. Runs once; safe to re-run (idempotent overwrite).
+  suru.t4.docker-host-init:
+    image: busybox:1.37.0@sha256:7a3ebe5bfd1a4a19797d20b0c0bb39d44393e9a03fd852c0865b0f540d868df0
+    container_name: suru.t4.docker-host-init
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # No network needed — this service only copies files via volume mounts.
+    network_mode: "none"
+    volumes:
+      - ./daemon.json:/src/daemon.json:ro
+      - ./buildkitd.toml:/src/buildkitd.toml:ro
+      - /etc/docker:/etc/docker
+      - /etc/buildkit:/etc/buildkit
+    command: >
+      sh -c "
+        set -e
+        cp /src/daemon.json /etc/docker/daemon.json
+        chmod 0644 /etc/docker/daemon.json
+        echo '[docker-host-init] daemon.json -> /etc/docker/daemon.json'
+        mkdir -p /etc/buildkit
+        cp /src/buildkitd.toml /etc/buildkit/buildkitd.toml
+        chmod 0644 /etc/buildkit/buildkitd.toml
+        echo '[docker-host-init] buildkitd.toml -> /etc/buildkit/buildkitd.toml'
+        echo '[docker-host-init] Done. Restart Docker to activate: sudo systemctl restart docker'
+      "
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"

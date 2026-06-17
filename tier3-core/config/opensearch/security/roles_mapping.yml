@@ -1,0 +1,55 @@
+---
+# SURU OpenSearch Security — Roles mapping
+_meta:
+  type: "rolesmapping"
+  config_version: 2
+
+# Full admin access — backend_role "admin" (set in internal_users.yml)
+all_access:
+  reserved: false
+  backend_roles:
+    - "admin"
+  description: "SURU admin — full OpenSearch access"
+
+# OSD backend service account — must map to built-in kibana_server role
+kibana_server:
+  reserved: false
+  users:
+    - "kibanaserver"
+
+# End-user browser access role (generic kibana_user built-in)
+kibana_user:
+  reserved: false
+  backend_roles:
+    - "kibanauser"
+
+# SURU security analyst role mapping
+suru_security_analyst:
+  reserved: false
+  backend_roles:
+    - "suru_security_analyst"
+  users:
+    - "mysecurity"
+
+# Logstash ingest
+suru_logstash:
+  reserved: false
+  backend_roles:
+    - "logstash"
+  users:
+    - "logstash"
+
+logstash:
+  reserved: false
+  backend_roles:
+    - "logstash"
+
+readall:
+  reserved: false
+  backend_roles:
+    - "readall"
+
+manage_snapshots:
+  reserved: false
+  backend_roles:
+    - "snapshotrestore"

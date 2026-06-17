@@ -1,0 +1,12 @@
+---
+# SURU OpenSearch Security — Allowed node DNs
+_meta:
+  type: "nodesdn"
+  config_version: 2
+
+default:
+  nodes_dn:
+    # MUST match the node transport cert CN (tier3-core/certs/node.pem) and the
+    # static plugins.security.nodes_dn in opensearch.yml. node.name stays the
+    # logical "opensearch-node1"; this is the cert DN, not the node name.
+    - "CN=suru-t3-datalake-opensearch,OU=SURU,O=SURU Platform,C=RO"

@@ -1,0 +1,43 @@
+# SURU Platform — JA3/JA3S TLS fingerprinting
+# Logs JA3 client fingerprints and JA3S server fingerprints for C2 detection.
+# MITRE ATT&CK: TA0011 Command and Control / T1071 Application Layer Protocol
+# Requires Zeek built with JA3 support (standard in Zeek 5+)
+#
+# SOURCE OF TRUTH: tier2-telemetry/zeek/scripts/
+
+module SURU_JA3;
+
+# JA3 fingerprinting is built into Zeek SSL policy.
+# This script enriches the ssl.log with a notice when a known-malicious JA3 hash is seen.
+
+export {
+    redef enum Notice::Type += {
+        ## Fired when a known-bad JA3 fingerprint is observed
+        SSL_Known_Bad_JA3
+    };
+
+    ## Known-malicious JA3 hashes — extend as threat intel is received
+    const bad_ja3_hashes: set[string] = {
+        # Cobalt Strike default JA3
+        "72a589da586844d7f0818ce684948eea",
+        # Metasploit meterpreter
+        "f436bf37f1d44e632ed87b80e8d2f8d7"
+    } &redef;
+}
+
+event ssl_client_hello(c: connection, version: count, record_version: count,
+                       possible_ts: time, client_random: string,
+                       session_id: string, ciphers: index_vec,
+                       comp_methods: index_vec)
+    {
+    if ( c?$ssl && c$ssl?$ja3 && c$ssl$ja3 in bad_ja3_hashes )
+        {
+        NOTICE([
+            $note       = SSL_Known_Bad_JA3,
+            $conn       = c,
+            $msg        = fmt("Known-malicious JA3 fingerprint: %s — T1071", c$ssl$ja3),
+            $identifier = c$ssl$ja3,
+            $suppress_for = 30min
+        ]);
+        }
+    }

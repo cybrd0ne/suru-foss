@@ -1,0 +1,360 @@
+# SURU — Tier 4 Operations / Group: monitoring
+# Services: suru-influxdb, suru-prometheus, suru-grafana
+# Container naming: suru.t<N>.<group>.<function>
+# Validate: docker compose config
+# Start:    docker compose up -d (after tier3-core datalake-opensearch is healthy;
+#           this stack attaches to the external network suru-t3-core-internal
+#           created by tier3-core/datalake/opensearch/compose.yaml)
+# Note:     Identifiers carry the t4 tier prefix. Operators upgrading from
+#           the previous no-prefix layout (`suru-monitoring-*` /
+#           `suru.monitoring.*`) should run
+#           tier4-operations/scripts/cleanup-legacy-monitoring.sh on each
+#           SIEM host before deploying this stack.
+
+name: suru-t4-monitoring
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-restart: &restart-unless-stopped
+  restart: unless-stopped
+
+# Set DOCKER_PLATFORM=linux/arm64 in your .env on Apple Silicon (macOS).
+# Default linux/amd64 targets the x86_64 SIEM host. All image digests are
+# manifest-list digests (platform-neutral), so Docker pulls the correct
+# arch layer automatically once the platform is specified.
+x-platform: &platform-default
+  platform: ${DOCKER_PLATFORM:-linux/amd64}
+
+networks:
+  siem-internal:
+    name: suru-t3-core-internal
+    external: true
+
+  monitoring-internal:
+    name: suru-t4-monitoring-internal
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
+    labels:
+      project: suru
+      group: monitoring
+      managed_by: compose
+
+volumes:
+  suru-influxdb-data:
+    name: suru-t4-monitoring-influxdb-data
+    labels:
+      project: suru
+      group: monitoring
+      component: suru-influxdb
+
+  suru-influxdb-config:
+    name: suru-t4-monitoring-influxdb-config
+    labels:
+      project: suru
+      group: monitoring
+      component: suru-influxdb
+
+  suru-prometheus-data:
+    name: suru-t4-monitoring-prometheus-data
+    labels:
+      project: suru
+      group: monitoring
+      component: suru-prometheus
+
+  suru-grafana-data:
+    name: suru-t4-monitoring-grafana-data
+    labels:
+      project: suru
+      group: monitoring
+      component: suru-grafana
+
+  suru-grafana-logs:
+    name: suru-t4-monitoring-grafana-logs
+    labels:
+      project: suru
+      group: monitoring
+      component: suru-grafana
+
+services:
+
+  # ── InfluxDB Volume Init ────────────────────────────────────────────────────────────
+  # influxdb:2 runs as influxdb (uid 1000). Named volumes are created root:root;
+  # influxdb as uid 1000 cannot write to them without this init step.
+  suru.t4.monitoring.influxdb-volume-init:
+    image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+    container_name: suru.t4.monitoring.influxdb-volume-init
+    <<: *platform-default
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # CHOWN: change ownership of existing files to 1000:1000.
+      # DAC_OVERRIDE: traverse pre-existing data dirs created mode 0700 by
+      #   influxdb (uid 1000) on prior runs — without it `chown -R` fails EACCES
+      #   on the first restrictive directory because root (cap_drop ALL) has no
+      #   bypass of discretionary access checks.
+      # FOWNER: chmod files/dirs the root process does not own — without it the
+      #   `chmod 755` fails EPERM on volumes already populated as uid 1000.
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    command: ["sh", "-c", "chown -R 1000:1000 /mnt/data /mnt/config && chmod 755 /mnt/data /mnt/config && echo '[influxdb-volume-init] volumes ownership set to 1000:1000'"]
+    volumes:
+      - suru-influxdb-data:/mnt/data
+      - suru-influxdb-config:/mnt/config
+    networks: []
+    logging: *default-logging
+
+  # ── InfluxDB ────────────────────────────────────────────────────────────────────────
+  # Container: suru.t4.monitoring.influxdb
+  suru.t4.monitoring.influxdb:
+    image: influxdb:2.9.1@sha256:003e028b675205f6148e5f30369fd3e854993b385f1e5e4d2d85bc9f8701bf28
+    container_name: suru.t4.monitoring.influxdb
+    hostname: suru-t4-monitoring-influxdb
+    <<: [*restart-unless-stopped, *platform-default]
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: "${INFLUXDB_ADMIN_USER}"
+      DOCKER_INFLUXDB_INIT_PASSWORD: "${INFLUXDB_ADMIN_PASSWORD}"
+      DOCKER_INFLUXDB_INIT_ORG: "${INFLUXDB_ORG:-suru}"
+      DOCKER_INFLUXDB_INIT_BUCKET: "${INFLUXDB_BUCKET:-suru-metrics}"
+      DOCKER_INFLUXDB_INIT_RETENTION: "90d"
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: "${INFLUXDB_TOKEN}"
+    depends_on:
+      suru.t4.monitoring.influxdb-volume-init:
+        condition: service_completed_successfully
+    volumes:
+      - suru-influxdb-data:/var/lib/influxdb2
+      - suru-influxdb-config:/etc/influxdb2
+    # No host port mapping — InfluxDB is reachable only over the internal
+    # network (Grafana datasource); not currently exposed via the frontdoor.
+    networks:
+      siem-internal:
+        aliases:
+          - suru-t4-monitoring-influxdb
+      monitoring-internal:
+        aliases:
+          - suru-t4-monitoring-influxdb
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # ── Prometheus volume init ────────────────────────────────────────────────────────
+  # prom/prometheus runs as nobody (UID 65534). Named volumes are created
+  # root-owned, so Prometheus panics on first start without this init step.
+  suru.t4.monitoring.prometheus-volume-init:
+    image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+    container_name: suru.t4.monitoring.prometheus-volume-init
+    <<: *platform-default
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # CHOWN: change ownership of existing TSDB blocks (owned by 65534 from
+      #   prior Prometheus runs).
+      # DAC_OVERRIDE: traverse pre-existing data dirs created mode 0700 by
+      #   Prometheus (uid 65534) — without it `chown -R` fails EACCES on the
+      #   first restrictive directory because root (cap_drop ALL) has no bypass
+      #   of discretionary access checks.
+      # FOWNER: chmod a directory the root process does not own — without it the
+      #   `chmod 755` fails EPERM once the volume is owned by uid 65534.
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    command: ["sh", "-c", "chown -R 65534:65534 /suru-prometheus && chmod 755 /suru-prometheus"]
+    volumes:
+      - suru-prometheus-data:/suru-prometheus
+    networks: []
+    logging: *default-logging
+
+  # ── Prometheus ────────────────────────────────────────────────────────────────────
+  # Container: suru.t4.monitoring.prometheus
+  suru.t4.monitoring.prometheus:
+    image: prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
+    container_name: suru.t4.monitoring.prometheus
+    hostname: suru-t4-monitoring-prometheus
+    <<: [*restart-unless-stopped, *platform-default]
+    user: "65534:65534"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    depends_on:
+      suru.t4.monitoring.prometheus-volume-init:
+        condition: service_completed_successfully
+    command:
+      - "--config.file=/etc/suru-prometheus/suru-prometheus.yml"
+      - "--storage.tsdb.path=/suru-prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.external-url=https://${FRONTDOOR_FQDN:-suru.local}/prometheus"
+    volumes:
+      - suru-prometheus-data:/suru-prometheus
+      - ./config/prometheus/prometheus.yml:/etc/suru-prometheus/suru-prometheus.yml:ro
+      - ./config/prometheus/alerts:/etc/suru-prometheus/alerts:ro
+    # No host port mapping — Prometheus is reachable only via the Tier 4
+    # frontdoor proxy (route /prometheus).
+    networks:
+      siem-internal:
+        aliases:
+          - suru-t4-monitoring-prometheus
+      monitoring-internal:
+        aliases:
+          - suru-t4-monitoring-prometheus
+    healthcheck:
+      # --web.external-url=.../prometheus sets the route-prefix to /prometheus,
+      # so internal endpoints move under that prefix. Probe the prefixed path —
+      # /-/ready at root returns 404 (the frontdoor passes /prometheus/* through
+      # unchanged, so Prometheus must serve under the prefix).
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/prometheus/-/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # ── Grafana Volume Init ─────────────────────────────────────────────────────────────
+  # grafana/grafana-oss runs as grafana (uid 472). Named volumes are created root:root;
+  # Grafana as uid 472 cannot write to them without this init step.
+  suru.t4.monitoring.grafana-volume-init:
+    image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+    container_name: suru.t4.monitoring.grafana-volume-init
+    <<: *platform-default
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # CHOWN: change ownership of existing files to 472:472.
+      # DAC_OVERRIDE: traverse pre-existing data dirs created mode 0700 by
+      #   Grafana (uid 472) on prior runs — without it `chown -R` fails EACCES
+      #   on the first restrictive directory because root (cap_drop ALL) has no
+      #   bypass of discretionary access checks.
+      # FOWNER: chmod files/dirs the root process does not own — without it the
+      #   `chmod 755` fails EPERM on volumes already populated as uid 472.
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    command: ["sh", "-c", "chown -R 472:472 /mnt/data /mnt/logs && chmod 755 /mnt/data /mnt/logs && echo '[grafana-volume-init] volumes ownership set to 472:472'"]
+    volumes:
+      - suru-grafana-data:/mnt/data
+      - suru-grafana-logs:/mnt/logs
+    networks: []
+    logging: *default-logging
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────────────
+  # Container: suru.t4.monitoring.grafana
+  suru.t4.monitoring.grafana:
+    image: grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2
+    container_name: suru.t4.monitoring.grafana
+    hostname: suru-t4-monitoring-grafana
+    <<: [*restart-unless-stopped, *platform-default]
+    user: "472:472"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    depends_on:
+      suru.t4.monitoring.grafana-volume-init:
+        condition: service_completed_successfully
+      suru.t4.monitoring.influxdb:
+        condition: service_healthy
+      suru.t4.monitoring.prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD}"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "https://${FRONTDOOR_FQDN:-suru.local}/grafana"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_LOG_MODE: "console"
+      GF_LOG_LEVEL: "warn"
+      GF_PATHS_DATA: "/var/lib/suru-grafana"
+      GF_PATHS_LOGS: "/var/log/suru-grafana"
+      GF_PATHS_PROVISIONING: "/etc/suru-grafana/provisioning"
+    volumes:
+      - suru-grafana-data:/var/lib/suru-grafana
+      - suru-grafana-logs:/var/log/suru-grafana
+      - ./config/grafana/provisioning:/etc/suru-grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/suru-grafana/dashboards:ro
+    # No host port mapping — Grafana is reachable only via the Tier 4
+    # frontdoor proxy (route /grafana).
+    networks:
+      siem-internal:
+        aliases:
+          - suru-t4-monitoring-grafana
+      monitoring-internal:
+        aliases:
+          - suru-t4-monitoring-grafana
+    healthcheck:
+      # Grafana returns pretty-printed JSON ("database": "ok" — note the space),
+      # so the matcher must tolerate whitespace after the colon. A no-space
+      # pattern ("database":"ok") never matches and the container is forever
+      # unhealthy despite a healthy /api/health response.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -Eq '\"database\": *\"ok\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # ── Watchdog (Watchtower) REMOVED (SEC-005) ────────────────────────────────────────────
+  # Watchtower required docker.sock mounted into the container — a container-escape
+  # primitive and hard-security-rule violation ("never mount docker.sock"). Even in
+  # MONITOR_ONLY mode the socket allows enumerating every container's environment
+  # (all live secrets). Removed; image freshness checks are now a scheduled cron
+  # responsibility of the operator (see docs/operations.md for the recommended
+  # `docker pull --dry-run` digest comparison workflow).
+  # [STUB: replace with socketless registry-digest-comparison script — SEC-005]

@@ -1,0 +1,528 @@
+# SURU — Tier3 / Group: datalake  /  Engine: opensearch
+# Services: opensearch, dashboards, dashboard-importer
+# Part of group: datalake  (add other engines as datalake/<engine>/compose.yaml)
+# Container naming: suru.t<N>.<group>.<function>
+# Validate: docker compose config
+# Start:    docker compose up -d
+
+name: suru-t3-datalake
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-restart: &restart-unless-stopped
+  restart: unless-stopped
+
+# Set DOCKER_PLATFORM=linux/arm64 in .env on Apple Silicon (macOS).
+# Default linux/amd64 targets the x86_64 SIEM host. All image digests are
+# manifest-list digests (platform-neutral).
+x-platform: &platform-default
+  platform: ${DOCKER_PLATFORM:-linux/amd64}
+
+# ─── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  siem-internal:
+    name: suru-t3-core-internal
+    external: true
+
+  datalake-internal:
+    name: suru-t3-datalake-internal
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+    labels:
+      project: suru
+      component: datalake
+      managed_by: compose
+
+# ─── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+
+  opensearch-data:
+    name: suru-t3-datalake-opensearch-data
+    labels:
+      project: suru
+      group: datalake
+      component: opensearch
+
+  opensearch-snapshots:
+    name: suru-t3-datalake-opensearch-snapshots
+    labels:
+      project: suru
+      group: datalake
+      component: opensearch
+
+  opensearch-config:
+    name: suru-t3-datalake-opensearch-config
+    labels:
+      project: suru
+      group: datalake
+      component: opensearch
+
+  opensearch-logs:
+    name: suru-t3-datalake-opensearch-logs
+    labels:
+      project: suru
+      group: datalake
+      component: opensearch
+
+  dashboards-config:
+    name: suru-t3-datalake-dashboards-config
+    labels:
+      project: suru
+      group: datalake
+      component: dashboards
+
+  dashboards-assets:
+    name: suru-t3-datalake-dashboards-assets
+    labels:
+      project: suru
+      group: datalake
+      component: dashboards
+
+# ─── Services ──────────────────────────────────────────────────────────────────
+services:
+
+  # ── Config Init ───────────────────────────────────────────────────────────────
+  suru.t3.datalake.config-init:
+    image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+    container_name: suru.t3.datalake.config-init
+    <<: *platform-default
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - ../../certs/node.pem:/src/certs/node.pem:ro
+      - ../../certs/node-key.pem:/src/certs/node-key.pem:ro
+      - ../../certs/root-ca.pem:/src/certs/root-ca.pem:ro
+      - ../../certs/admin.pem:/src/certs/admin.pem:ro
+      - ../../certs/admin-key.pem:/src/certs/admin-key.pem:ro
+      - ../../config/opensearch/opensearch.yml:/src/opensearch.yml:ro
+      - ../../config/opensearch/index-templates:/src/index-templates:ro
+      - ../../config/opensearch/ism-policies:/src/ism-policies:ro
+      - ../../config/opensearch/security:/src/security:ro
+      - opensearch-config:/config
+    command: >
+      sh -c "
+        set -e
+
+        echo '[config-init] Seeding opensearch config volume...'
+
+        cp /src/opensearch.yml /config/opensearch.yml
+
+        mkdir -p /config/index-templates
+        cp -r /src/index-templates/. /config/index-templates/
+
+        mkdir -p /config/ism-policies
+        cp -r /src/ism-policies/. /config/ism-policies/
+
+        mkdir -p /config/certs
+        cp /src/certs/node.pem      /config/certs/node.pem
+        cp /src/certs/node-key.pem  /config/certs/node-key.pem
+        cp /src/certs/root-ca.pem   /config/certs/root-ca.pem
+        cp /src/certs/admin.pem     /config/certs/admin.pem
+        cp /src/certs/admin-key.pem /config/certs/admin-key.pem
+
+        chown -R 1000:1000 /config
+
+        chmod 0600 /config/certs/node-key.pem
+        chmod 0600 /config/certs/admin-key.pem
+        chmod 0640 /config/certs/node.pem
+        chmod 0640 /config/certs/root-ca.pem
+        chmod 0640 /config/certs/admin.pem
+        chmod 0640 /config/opensearch.yml
+        chmod 0750 /config/certs
+
+        mkdir -p /config/securityconfig
+        cp /src/security/config.yml         /config/securityconfig/config.yml
+        cp /src/security/internal_users.yml /config/securityconfig/internal_users.yml
+        cp /src/security/roles.yml          /config/securityconfig/roles.yml
+        cp /src/security/roles_mapping.yml  /config/securityconfig/roles_mapping.yml
+        cp /src/security/action_groups.yml  /config/securityconfig/action_groups.yml
+        cp /src/security/tenants.yml        /config/securityconfig/tenants.yml
+        cp /src/security/nodes_dn.yml       /config/securityconfig/nodes_dn.yml
+        chown -R 1000:1000 /config/securityconfig
+        chmod 0700 /config/securityconfig
+        chmod 0600 /config/securityconfig/*.yml
+
+        mkdir -p /config/opensearch-performance-analyzer
+        printf 'performanceanalyzer.enabled=false\nwebservice-enabled=false\n' \
+          > /config/opensearch-performance-analyzer/performance-analyzer.properties
+        touch /config/opensearch-performance-analyzer/plugin-stats-metadata
+        chown -R 1000:1000 /config/opensearch-performance-analyzer
+
+        echo '[config-init] Final layout:'
+        ls -la /config/
+        ls -la /config/certs/
+
+        echo '[config-init] Done.'
+      "
+    networks: []
+    logging: *default-logging
+
+  # ── OpenSearch Node ──────────────────────────────────────────────────────────
+  suru.t3.datalake.opensearch:
+    image: opensearchproject/opensearch:2.19.5@sha256:e225ca1a828ef054e0335a0c234198a7b8f80abcc90f1159273ca7be5d8bbdff
+    container_name: suru.t3.datalake.opensearch
+    hostname: suru-t3-datalake-opensearch
+    <<: [*restart-unless-stopped, *platform-default]
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    depends_on:
+      suru.t3.datalake.config-init:
+        condition: service_completed_successfully
+    environment:
+      cluster.name: suru-t3-datalake
+      node.name: suru-t3-datalake-opensearch
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: "${OPENSEARCH_JAVA_OPTS:--Xms2g -Xmx2g}"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      plugins.security.ssl.http.enabled: "true"
+      plugins.security.ssl.http.pemcert_filepath: certs/node.pem
+      plugins.security.ssl.http.pemkey_filepath: certs/node-key.pem
+      plugins.security.ssl.http.pemtrustedcas_filepath: certs/root-ca.pem
+      plugins.security.ssl.transport.pemcert_filepath: certs/node.pem
+      plugins.security.ssl.transport.pemkey_filepath: certs/node-key.pem
+      plugins.security.ssl.transport.pemtrustedcas_filepath: certs/root-ca.pem
+      plugins.security.ssl.transport.enforce_hostname_verification: "false"
+      plugins.security.allow_default_init_securityindex: "true"
+      path.repo: /usr/share/opensearch/snapshots
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+      - opensearch-snapshots:/usr/share/opensearch/snapshots
+      - opensearch-logs:/usr/share/opensearch/logs
+      - opensearch-config:/usr/share/opensearch/config
+    networks:
+      siem-internal:
+        aliases:
+          - opensearch
+      datalake-internal:
+        aliases:
+          - suru-t3-datalake-opensearch
+    healthcheck:
+      # Accept only 200. This probe authenticates with the admin password, so a
+      # 401 means the credentials are wrong — the node must NOT report healthy in
+      # that case (dependent services gate on service_healthy and would otherwise
+      # start against a mis-credentialed cluster). The default security index is
+      # initialised on first boot, so admin creds return 200 before security-init
+      # runs; there is no chicken-and-egg with the security bootstrap.
+      test:
+        - CMD-SHELL
+        - >
+          curl -sk -o /dev/null -w '%{http_code}'
+          -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+          https://localhost:9200/_cluster/health
+          | grep -qE '^200$'
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 90s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+  # ── Security Init ─────────────────────────────────────────────────────────────
+  suru.t3.datalake.security-init:
+    image: opensearchproject/opensearch:2.19.5@sha256:e225ca1a828ef054e0335a0c234198a7b8f80abcc90f1159273ca7be5d8bbdff
+    container_name: suru.t3.datalake.security-init
+    <<: *platform-default
+    restart: "no"
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    depends_on:
+      suru.t3.datalake.opensearch:
+        condition: service_healthy
+    environment:
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+      LOGSTASH_OPENSEARCH_PASSWORD: "${LOGSTASH_OPENSEARCH_PASSWORD}"
+      MYSECURITY_OPENSEARCH_PASSWORD: "${MYSECURITY_OPENSEARCH_PASSWORD}"
+      OPENSEARCH_DASHBOARDS_PASSWORD: "${OPENSEARCH_DASHBOARDS_PASSWORD}"
+      OS_HOST: suru-t3-datalake-opensearch
+      OS_PORT: "9200"
+    volumes:
+      - opensearch-config:/config:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+
+        HASH_TOOL="/usr/share/opensearch/plugins/opensearch-security/tools/hash.sh"
+        SEC_ADMIN="/usr/share/opensearch/plugins/opensearch-security/tools/securityadmin.sh"
+        SEC_CFG="/tmp/securityconfig"
+        CERT_DIR="/config/certs"
+
+        echo "[security-init] Copying security config to writable temp dir..."
+        cp -r /config/securityconfig "$$SEC_CFG"
+        chmod -R u+w "$$SEC_CFG"
+
+        echo "[security-init] Hashing passwords..."
+        ADMIN_HASH="$$($$HASH_TOOL -p "$${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" 2>/dev/null | grep -o '\$2[ayb]\$[^ ]*' | head -1)"
+        LOGSTASH_HASH="$$($$HASH_TOOL -p "$${LOGSTASH_OPENSEARCH_PASSWORD}"   2>/dev/null | grep -o '\$2[ayb]\$[^ ]*' | head -1)"
+        DASHBOARDS_HASH="$$($$HASH_TOOL -p "$${OPENSEARCH_DASHBOARDS_PASSWORD}" 2>/dev/null | grep -o '\$2[ayb]\$[^ ]*' | head -1)"
+        MYSECURITY_HASH="$$($$HASH_TOOL -p "$${MYSECURITY_OPENSEARCH_PASSWORD}" 2>/dev/null | grep -o '\$2[ayb]\$[^ ]*' | head -1)"
+
+        [ -z "$$ADMIN_HASH" ]      && echo "[security-init] ERROR: ADMIN_HASH is empty — check hash.sh output" && exit 1
+        [ -z "$$LOGSTASH_HASH" ]   && echo "[security-init] ERROR: LOGSTASH_HASH is empty" && exit 1
+        [ -z "$$DASHBOARDS_HASH" ] && echo "[security-init] ERROR: DASHBOARDS_HASH is empty" && exit 1
+        [ -z "$$MYSECURITY_HASH" ] && echo "[security-init] ERROR: MYSECURITY_HASH is empty" && exit 1
+
+        echo "[security-init] ADMIN_HASH prefix:      $${ADMIN_HASH:0:7}"
+        echo "[security-init] LOGSTASH_HASH prefix:   $${LOGSTASH_HASH:0:7}"
+        echo "[security-init] DASHBOARDS_HASH prefix: $${DASHBOARDS_HASH:0:7}"
+        echo "[security-init] MYSECURITY_HASH prefix   : $${MYSECURITY_HASH:0:7}"
+
+        echo "[security-init] Patching internal_users.yml with bcrypt hashes..."
+        sed -i "s|ADMIN_BCRYPT_HASH|$$ADMIN_HASH|g"        "$$SEC_CFG/internal_users.yml"
+        sed -i "s|LOGSTASH_BCRYPT_HASH|$$LOGSTASH_HASH|g"   "$$SEC_CFG/internal_users.yml"
+        sed -i "s|DASHBOARDS_BCRYPT_HASH|$$DASHBOARDS_HASH|g" "$$SEC_CFG/internal_users.yml"
+        sed -i "s|MYSECURITY_BCRYPT_HASH|$$MYSECURITY_HASH|g" "$$SEC_CFG/internal_users.yml"
+
+        echo "[security-init] Running securityadmin.sh..."
+        chmod +x "$$SEC_ADMIN"
+        "$$SEC_ADMIN" \
+          -cd  "$$SEC_CFG" \
+          -h   "$${OS_HOST}" \
+          -p   "$${OS_PORT}" \
+          -cacert "$$CERT_DIR/root-ca.pem" \
+          -cert   "$$CERT_DIR/admin.pem" \
+          -key    "$$CERT_DIR/admin-key.pem" \
+          -icl \
+          -nhnv
+
+        echo "[security-init] .opendistro_security index seeded successfully."
+    networks:
+      datalake-internal:
+        aliases:
+          - security-init
+    logging: *default-logging
+
+  # ── Index Template Init ──────────────────────────────────────────────────────
+  # Applies all *.json index templates from the opensearch-config volume to the
+  # OpenSearch REST API after security is bootstrapped. Idempotent (PUT is safe
+  # to re-run). Gated behind the "init" profile so compose up -d does NOT start
+  # it automatically — deploy.sh triggers it explicitly with --profile init.
+  # Run manually: docker compose --profile init run --rm suru.t3.datalake.template-init
+  suru.t3.datalake.template-init:
+    image: curlimages/curl:8.14.1@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b
+    container_name: suru.t3.datalake.template-init
+    <<: *platform-default
+    restart: "no"
+    profiles: [init]
+    depends_on:
+      suru.t3.datalake.security-init:
+        condition: service_completed_successfully
+    environment:
+      OS_HOST: suru-t3-datalake-opensearch
+      OS_PORT: "9200"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+      TEMPLATES_DIR: /config/index-templates
+    user: "100:100"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    volumes:
+      - opensearch-config:/config:ro
+      - ../../scripts/apply-index-templates.sh:/apply-index-templates.sh:ro
+    entrypoint: ["/bin/sh", "/apply-index-templates.sh"]
+    networks:
+      - datalake-internal
+    logging: *default-logging
+
+  # ── ISM Policy Init ─────────────────────────────────────────────────────────
+  # Applies all *.json ISM retention policies from the opensearch-config volume.
+  # Idempotent — PUT creates or updates (with seq_no/primary_term for updates).
+  # Gated behind the "init" profile — deploy.sh triggers it after template-init.
+  # Run manually: docker compose --profile init run --rm suru.t3.datalake.ism-policy-init
+  suru.t3.datalake.ism-policy-init:
+    image: curlimages/curl:8.14.1@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b
+    container_name: suru.t3.datalake.ism-policy-init
+    <<: *platform-default
+    restart: "no"
+    profiles: [init]
+    depends_on:
+      suru.t3.datalake.template-init:
+        condition: service_completed_successfully
+    environment:
+      OS_HOST: suru-t3-datalake-opensearch
+      OS_PORT: "9200"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+      POLICIES_DIR: /config/ism-policies
+    user: "100:100"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    volumes:
+      - opensearch-config:/config:ro
+      - ../../scripts/apply-ism-policies.sh:/apply-ism-policies.sh:ro
+    entrypoint: ["/bin/sh", "/apply-ism-policies.sh"]
+    networks:
+      - datalake-internal
+    logging: *default-logging
+
+  # ── Dashboards Volume Init ───────────────────────────────────────────────────
+  # Chowns dashboards-config and dashboards-assets to uid 1000 (opensearch-dashboards)
+  # before OSD starts. Named volumes are created root:root by Docker; OSD as uid
+  # 1000 cannot write to them without this step.
+  suru.t3.datalake.dashboards-volume-init:
+    image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+    container_name: suru.t3.datalake.dashboards-volume-init
+    <<: *platform-default
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - dashboards-config:/mnt/config
+      - dashboards-assets:/mnt/assets
+    command: >
+      sh -c "
+        chown -R 1000:1000 /mnt/config /mnt/assets
+        chmod 0750 /mnt/config /mnt/assets
+        echo '[dashboards-volume-init] volumes ownership set to 1000:1000'
+      "
+    networks: []
+    logging: *default-logging
+
+  # ── OpenSearch Dashboards ────────────────────────────────────────────────────
+  suru.t3.datalake.dashboards:
+    image: opensearchproject/opensearch-dashboards:2.19.5@sha256:5d0b949a4ebe8d40e1b0ecf7f0125ec64afc80f9bff77bf7cb9e897bd8552c16
+    container_name: suru.t3.datalake.dashboards
+    hostname: suru-t3-datalake-dashboards
+    <<: [*restart-unless-stopped, *platform-default]
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    depends_on:
+      suru.t3.datalake.security-init:
+        condition: service_completed_successfully
+      suru.t3.datalake.dashboards-volume-init:
+        condition: service_completed_successfully
+    environment:
+      OPENSEARCH_HOSTS: '["https://suru-t3-datalake-opensearch:9200"]'
+      OPENSEARCH_USERNAME: "${OPENSEARCH_DASHBOARDS_USER}"
+      OPENSEARCH_PASSWORD: "${OPENSEARCH_DASHBOARDS_PASSWORD}"
+      SERVER_SSL_ENABLED: "true"
+      SERVER_SSL_CERTIFICATE: /usr/share/opensearch-dashboards/certs/dashboard.pem
+      SERVER_SSL_KEY: /usr/share/opensearch-dashboards/certs/dashboard-key.pem
+      OPENSEARCH_SSL_CERTIFICATEAUTHORITIES: /usr/share/opensearch-dashboards/certs/root-ca.pem
+      OPENSEARCH_SSL_VERIFICATIONMODE: certificate
+      SECURITY_MULTITENANCY_ENABLED: "true"
+    volumes:
+      - dashboards-config:/usr/share/opensearch-dashboards/config
+      - dashboards-assets:/usr/share/opensearch-dashboards/plugins/securityDashboards/public/assets/custom
+      - ../../certs/dashboard.pem:/usr/share/opensearch-dashboards/certs/dashboard.pem:ro
+      - ../../certs/dashboard-key.pem:/usr/share/opensearch-dashboards/certs/dashboard-key.pem:ro
+      - ../../certs/root-ca.pem:/usr/share/opensearch-dashboards/certs/root-ca.pem:ro
+      - ../../config/opensearch/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+    networks:
+      siem-internal:
+        aliases:
+          - dashboards
+      datalake-internal:
+        aliases:
+          - suru-t3-datalake-dashboards
+    healthcheck:
+      # 401 is intentionally accepted here (unlike the opensearch probe above):
+      # with the security plugin enabled, /dashboards/api/status returns 401 even
+      # for a fully-healthy OSD AND even when valid dashboards credentials are
+      # supplied (verified live 2026-06-13). The probe is therefore a liveness
+      # check — a 200/401 response proves the OSD server is up and the security
+      # plugin is answering. Do NOT remove 401 here or OSD never reports healthy
+      # and dashboard-importer (gated on service_healthy) never runs.
+      test:
+        - CMD-SHELL
+        - >
+          curl -sk -o /dev/null -w '%{http_code}'
+          https://localhost:5601/dashboards/api/status
+          | grep -qE '^(200|401)$'
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 120s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # ── Dashboard Importer ───────────────────────────────────────────────────────
+  # Gated behind the "init" profile — compose up -d does NOT start it.
+  # deploy.sh triggers it explicitly with --profile init after dashboards is healthy.
+  # Run manually: docker compose --profile init run --rm suru.t3.datalake.dashboard-importer
+  suru.t3.datalake.dashboard-importer:
+    image: curlimages/curl:8.14.1@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b
+    container_name: suru.t3.datalake.dashboard-importer
+    <<: *platform-default
+    restart: "no"
+    profiles: [init]
+    user: "100:100"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    depends_on:
+      suru.t3.datalake.dashboards:
+        condition: service_healthy
+    environment:
+      DASHBOARDS_INTERNAL_URL: "${DASHBOARDS_INTERNAL_URL:-https://suru-t3-datalake-dashboards:5601}"
+      DASHBOARDS_EXTERNAL_URL: "${DASHBOARDS_EXTERNAL_URL:-https://suru.local/}"
+      OPENSEARCH_DASHBOARDS_USER: "${OPENSEARCH_DASHBOARDS_USER}"
+      OPENSEARCH_DASHBOARDS_PASSWORD: "${OPENSEARCH_DASHBOARDS_PASSWORD}"
+    volumes:
+      - ../../config/opensearch/dashboards:/dashboards:ro
+      - ../../scripts/import-dashboards.sh:/import-dashboards.sh:ro
+      - ../../certs/root-ca.pem:/certs/root-ca.pem:ro
+    entrypoint: ["/bin/sh", "/import-dashboards.sh"]
+    networks:
+      - datalake-internal
+    logging: *default-logging

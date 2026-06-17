@@ -1,0 +1,57 @@
+# Secrets & Certs
+*.pem
+*.key
+*.crt
+*.p12
+# PKCS#12 bundle — keep key material out of git
+*.pfx
+.env
+.env.*
+!.env.example
+secrets/
+tier1-perimeter/backups/
+
+# SOPS age keys
+*.age
+age.key
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl
+
+# Go
+bin/
+dist/
+vendor/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Docker
+*.log
+
+# IDE
+.idea/
+.vscode/
+.history/
+*.swp
+*.swo
+*~
+
+# Merge / patch leftovers
+*.orig
+*.rej
+*.bak
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated / rendered output
+tier1-perimeter/rendered/

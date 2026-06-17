@@ -1,0 +1,58 @@
+# SURU — pfSense dedicated multi-pipeline layout
+# =============================================================================
+# path.config values MUST match the volume mount target in compose.yaml:
+#   ../../config/logstash-pfsense/pipelines/ -> /usr/share/logstash/pipeline/
+# =============================================================================
+
+- pipeline.id: pfsense-input-syslog-tls
+  path.config: "/usr/share/logstash/pipeline/01-input-syslog-tls.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+  # queue.type inherited from the global `queue.type: persisted` in logstash.yml
+  # (SEC-080) — the per-pipeline override here was redundant and applied to this
+  # one pipeline only, masking that the others also rely on the global default.
+
+- pipeline.id: pfsense-input-beats-tls
+  path.config: "/usr/share/logstash/pipeline/00-input-beats-tls.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+
+- pipeline.id: pfsense-firewall
+  path.config: "/usr/share/logstash/pipeline/10-pfsense-firewall.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+
+- pipeline.id: pfsense-services
+  path.config: "/usr/share/logstash/pipeline/11-pfsense-services.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+
+- pipeline.id: suricata-eve
+  path.config: "/usr/share/logstash/pipeline/20-suricata-eve.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+
+- pipeline.id: zeek
+  path.config: "/usr/share/logstash/pipeline/30-zeek.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 100
+
+- pipeline.id: pfblockerng
+  path.config: "/usr/share/logstash/pipeline/40-pfblockerng.conf"
+  pipeline.workers: 1
+  pipeline.batch.size: 100
+
+# Central GeoIP/ASN enrichment. The path is entrypoint-GENERATED at
+# /tmp/geoip-pipeline/35-geoip.conf: the geoip-enabled 35-geoip.conf when a
+# MaxMind DB is present, else 35-geoip-passthrough.conf (the geoip filter is
+# fatal at startup if its DB file is missing). 10/20/30 route good events here
+# via `send_to => "geoip-pipe"`.
+- pipeline.id: geoip
+  path.config: "/tmp/geoip-pipeline/35-geoip.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+
+- pipeline.id: quarantine-deadletter
+  path.config: "/usr/share/logstash/pipeline/90-deadletter.conf"
+  pipeline.workers: 1
+  pipeline.batch.size: 50

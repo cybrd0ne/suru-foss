@@ -1,0 +1,45 @@
+# SURU — Tier 3 / Docker host configuration
+# Deploys daemon.json to the local Docker host.
+# Run via: bash tier3-core/scripts/deploy.sh configure-host
+#
+# Tier 3 is a pull-only host — no Docker builds occur here, so only
+# daemon.json is deployed (buildkitd.toml is Tier 4 only).
+#
+# Source: tier4-operations/docker/daemon.json (canonical shared config).
+# This compose file is self-contained — no external networks required.
+
+name: suru-t3-docker-host
+
+services:
+
+  # ── Docker host init ─────────────────────────────────────────────────────────
+  # Copies daemon.json to /etc/docker on the local (Tier 3) host filesystem.
+  # Runs once; safe to re-run (idempotent overwrite).
+  suru.t3.docker-host-init:
+    image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+    container_name: suru.t3.docker-host-init
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # No network needed — this service only copies files via volume mounts.
+    network_mode: "none"
+    volumes:
+      - ../../tier4-operations/docker/daemon.json:/src/daemon.json:ro
+      - /etc/docker:/etc/docker
+    command: >
+      sh -c "
+        set -e
+        cp /src/daemon.json /etc/docker/daemon.json
+        chmod 0644 /etc/docker/daemon.json
+        echo '[docker-host-init] daemon.json -> /etc/docker/daemon.json'
+        echo '[docker-host-init] Done. Restart Docker to activate: sudo systemctl restart docker'
+      "
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"

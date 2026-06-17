@@ -1,0 +1,35 @@
+# SURU (suru-foss) — Code Owners
+# ============================================================================
+# Enforces the merge gate documented in CONTRIBUTING.md: passing CI + a
+# CODEOWNER review before a protected branch can merge. For this to take effect,
+# enable Settings → Branches → (main, develop) → "Require review from Code Owners".
+#
+# Replace @cybrd0ne below with the GitHub handle(s) or team(s) that own each area.
+# Matching is LAST-match-wins: more specific rules override broader ones above.
+# ============================================================================
+
+# ── Default owner (catch-all) ───────────────────────────────────────────────
+*                                       @cybrd0ne
+
+# ── Tiers ───────────────────────────────────────────────────────────────────
+/tier1-perimeter/                       @cybrd0ne
+/tier2-telemetry/                       @cybrd0ne
+/tier3-core/                            @cybrd0ne
+/tier4-operations/                      @cybrd0ne
+
+# ── Detection content (signatures, rules, dashboards) ───────────────────────
+/tier2-telemetry/suricata/              @cybrd0ne
+/tier2-telemetry/zeek/                  @cybrd0ne
+/tier3-core/config/opensearch/          @cybrd0ne
+
+# ── Infrastructure as Code ──────────────────────────────────────────────────
+*.tf                                    @cybrd0ne
+*.tfvars                                @cybrd0ne
+
+# ── PKI / certificates (single Root CA — highest blast radius) ──────────────
+/tier4-operations/pki/                  @cybrd0ne
+
+# ── CI / supply chain / repo governance ─────────────────────────────────────
+/.github/                               @cybrd0ne
+/LICENSE                                @cybrd0ne
+/SECURITY.md                            @cybrd0ne

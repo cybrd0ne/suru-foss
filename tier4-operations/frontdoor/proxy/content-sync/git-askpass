@@ -1,0 +1,11 @@
+#!/bin/sh
+# GIT_ASKPASS helper for the content-sync sidecar. git invokes this when it needs
+# credentials for the HTTPS remote. It carries NO secret itself — it echoes the
+# token from the CONTENT_REPO_TOKEN environment variable at runtime, so the token
+# never lands in git config, the URL, or any on-disk file. Baked into the image
+# (on the exec-allowed rootfs) so the container can run non-root with a noexec
+# /tmp tmpfs (SEC-038).
+case "$1" in
+  Username*) printf 'x-access-token' ;;
+  *)         printf '%s' "$CONTENT_REPO_TOKEN" ;;
+esac

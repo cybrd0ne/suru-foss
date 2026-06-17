@@ -1,0 +1,64 @@
+# SURU Platform — pfBlockerNG DNSBL Category Policy
+# SOURCE OF TRUTH: tier2-telemetry/pfblockerng/categories/
+# Consumed by: tier2-telemetry/build/lib/render-pfblockerng.sh
+# Output to:   tier1-perimeter/rendered/<platform>/pfblockerng.xml
+#
+# MITRE ATT&CK coverage noted per feed.
+# Validation: yq eval '.' dnsbl-categories.yml > /dev/null && echo OK
+---
+global:
+  dnsbl_mode: unbound_python
+  blocking_ip: "0.0.0.0"
+  port: 8081
+  interface: lo0
+
+feeds:
+  - aliasname: SURU_StevenBlack_Unified
+    action: "Deny Both"
+    url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+    format: Domain
+    state: Enabled
+    update: Weekly
+    priority: 3
+    desc: "Steven Black unified hosts — ads, malware"
+    mitre: [T1566, T1071.004]
+
+  - aliasname: SURU_ET_DNSBL
+    action: "Deny Both"
+    url: "https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt"
+    format: Domain
+    state: Enabled
+    update: Daily
+    priority: 5
+    desc: "Emerging Threats DNSBL block list"
+    mitre: [T1071, T1566]
+
+  - aliasname: SURU_URLhaus_Malware
+    action: "Deny Both"
+    url: "https://urlhaus.abuse.ch/downloads/domainlist/"
+    format: Domain
+    state: Enabled
+    update: Daily
+    priority: 5
+    desc: "URLhaus active malware domains"
+    mitre: [T1566.002, T1071, T1588, T1583]
+
+  - aliasname: SURU_PhishTank
+    action: "Deny Both"
+    url: "http://data.phishtank.com/data/online-valid.csv"
+    format: CSV
+    state: Enabled
+    update: Daily
+    priority: 5
+    desc: "PhishTank verified phishing domains"
+    mitre: [T1566]
+
+  - aliasname: SURU_Disconnect_Tracking
+    action: "Deny Both"
+    url: "https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt"
+    format: Domain
+    state: Enabled
+    update: Weekly
+    priority: 2
+    desc: "Disconnect.me tracking domains"
+    mitre: []

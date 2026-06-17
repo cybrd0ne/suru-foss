@@ -1,0 +1,49 @@
+# OpenSearch Dashboards configuration — SURU
+# Mounted read-only at: /usr/share/opensearch-dashboards/config/opensearch_dashboards.yml
+
+server.host: "0.0.0.0"
+server.port: 5601
+server.name: "suru-dashboards"
+
+# ── Reverse proxy basepath ────────────────────────────────────────────────────
+# The Tier 4 frontdoor exposes Dashboards at https://${FRONTDOOR_FQDN}/dashboards/.
+# basePath tells Dashboards to prefix every self-generated URL accordingly;
+# rewriteBasePath: true makes Dashboards strip the prefix again before
+# handling the request (nginx forwards the path through unchanged via a
+# `proxy_pass` without a path component).
+# Refs: https://opensearch.org/docs/latest/install-and-configure/install-dashboards/configuration/
+server.basePath: "/dashboards"
+server.rewriteBasePath: true
+
+# ── TLS ───────────────────────────────────────────────────────────────────────
+server.ssl.enabled: true
+server.ssl.certificate: /usr/share/opensearch-dashboards/certs/dashboard.pem
+server.ssl.key: /usr/share/opensearch-dashboards/certs/dashboard-key.pem
+
+# ── Backend OpenSearch connection ─────────────────────────────────────────────
+opensearch.hosts: ["https://suru-t3-datalake-opensearch:9200"]
+# opensearch.username / opensearch.password set via OPENSEARCH_USERNAME / OPENSEARCH_PASSWORD env vars
+opensearch.ssl.certificateAuthorities: ["/usr/share/opensearch-dashboards/certs/root-ca.pem"]
+opensearch.ssl.verificationMode: full
+opensearch.requestHeadersAllowlist: ["securitytenant", "Authorization"]
+opensearch.ignoreVersionMismatch: true
+
+# ── Security / multitenancy ───────────────────────────────────────────────────
+opensearch_security.multitenancy.enabled: true
+opensearch_security.multitenancy.tenants.preferred: ["Global", "Private"]
+opensearch_security.multitenancy.tenants.enable_global: true
+opensearch_security.multitenancy.tenants.enable_private: true
+opensearch_security.readonly_mode.roles: ["kibana_read_only"]
+opensearch_security.cookie.secure: true
+
+# ── Feature flags — disable non-SIEM features ─────────────────────────────────
+# Disable Explore (new home page experiment in OSD 2.x/3.x)
+explore.enabled: false
+# Disable multiple external datasource support (not used in SURU)
+data_source.enabled: false
+# Disable workspaces feature (enterprise feature not applicable)
+workspace.enabled: false
+# Skip welcome screen on first load
+home.disableWelcomeScreen: true
+# Land users directly on Dashboards list
+opensearch_security.multitenancy.enable_aggregation_view: false

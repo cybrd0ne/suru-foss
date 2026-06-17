@@ -1,0 +1,54 @@
+# SURU platform default ISM retention policy — applied to all suru-* indices.
+# Retention: delete after 30 days.
+#
+# Single-node SOHO hardware (~59 GB disk):
+#   Suricata grows at ~580 MB/day → 30 days ≈ 17 GB, well under the 50 GB
+#   high-watermark ceiling. Zeek, pfBlockerNG, and pfSense data is an order
+#   of magnitude smaller.
+#
+# No warm phase: single-node clusters cannot merge/shrink replicas, so the
+# hot→warm transition provides no benefit. Hot→delete keeps it simple.
+#
+# The ism_template block auto-attaches this policy to every new suru-* index
+# at creation time (priority 100, matching the index template priority).
+#
+# Policy ID: suru-default
+# Applied by: tier3-core/scripts/apply-ism-policies.sh
+# PUT _plugins/_ism/policies/suru-default
+
+PUT /_plugins/_ism/policies/suru-default
+{
+  "policy": {
+    "description": "SURU default retention: delete suru-* indices after 30 days. Single-node SOHO profile — no warm phase.",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "30d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          {
+            "delete": {}
+          }
+        ],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": ["suru-*"],
+        "priority": 100
+      }
+    ]
+  }
+}

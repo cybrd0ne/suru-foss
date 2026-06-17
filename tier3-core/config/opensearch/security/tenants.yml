@@ -1,0 +1,16 @@
+---
+# SURU OpenSearch Security — Tenants
+_meta:
+  type: "tenants"
+  config_version: 2
+
+# global_tenant is a built-in reserved tenant in OpenSearch Security.
+# All shared dashboards/visualizations are stored here.
+# We declare it to ensure it is not accidentally disabled.
+global_tenant:
+  reserved: true
+  description: "Global tenant — shared dashboards visible to all authorized users"
+
+suru:
+  reserved: false
+  description: "SURU platform private tenant"

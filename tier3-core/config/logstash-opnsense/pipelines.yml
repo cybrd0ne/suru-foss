@@ -1,0 +1,33 @@
+# Logstash multi-pipeline configuration
+# 00-beats-input: shared TLS Beats receiver — routes to pfsense-pipe and pfblocker-pipe
+# Validate: docker exec suru.t3.ingestion.logstash-opnsense logstash --config.test_and_exit
+
+- pipeline.id: beats-input
+  path.config: "/usr/share/logstash/pipeline/00-beats-input.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+
+- pipeline.id: pfsense-opnsense
+  path.config: "/usr/share/logstash/pipeline/10-pfsense.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+
+- pipeline.id: suricata-eve
+  path.config: "/usr/share/logstash/pipeline/20-suricata.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+
+- pipeline.id: zeek-conn
+  path.config: "/usr/share/logstash/pipeline/30-zeek.conf"
+  pipeline.workers: 1
+  pipeline.batch.size: 50
+
+- pipeline.id: pfblocker
+  path.config: "/usr/share/logstash/pipeline/40-pfblocker.conf"
+  pipeline.workers: 1
+  pipeline.batch.size: 50
+
+- pipeline.id: quarantine-deadletter
+  path.config: "/usr/share/logstash/pipeline/90-deadletter.conf"
+  pipeline.workers: 1
+  pipeline.batch.size: 50

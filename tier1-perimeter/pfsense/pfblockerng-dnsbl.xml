@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SURU Platform — pfBlockerNG DNSBL feed list template
+  Import via: pfSense UI → Firewall → pfBlockerNG → DNSBL → Import
+  or via pfSense config merge (Diagnostics → Backup/Restore → merge section).
+
+  Included feed categories:
+    - Steven Black unified hosts (ads, malware, fakernews, gambling, porn)
+    - Emerging Threats DNSBL
+    - URLhaus malware domains
+    - PhishTank phishing domains
+    - Disconnect.me tracking
+
+  MITRE ATT&CK: TA0011 C2 — T1071.004 DNS, T1568 Dynamic Resolution
+-->
+<pfsense>
+  <pfblockerng>
+    <dnsbl>
+      <config>
+        <dnsbl_enable>on</dnsbl_enable>
+        <dnsbl_mode>unbound_python</dnsbl_mode>
+        <dnsbl_wildcard>0</dnsbl_wildcard>
+        <dnsbl_blocking>0.0.0.0</dnsbl_blocking>
+        <dnsbl_port>8081</dnsbl_port>
+        <dnsbl_interface>lo0</dnsbl_interface>
+      </config>
+
+      <dnsblfeeds>
+
+        <!-- Steven Black Unified Hosts -->
+        <row>
+          <aliasname>SURU_StevenBlack_Unified</aliasname>
+          <action>Deny Both</action>
+          <url>https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts</url>
+          <format>Domain</format>
+          <state>Enabled</state>
+          <update>Weekly</update>
+          <priority>3</priority>
+          <desc>Steven Black unified hosts — ads, malware</desc>
+        </row>
+
+        <!-- Emerging Threats DNSBL -->
+        <row>
+          <aliasname>SURU_ET_DNSBL</aliasname>
+          <action>Deny Both</action>
+          <url>https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt</url>
+          <format>Domain</format>
+          <state>Enabled</state>
+          <update>Daily</update>
+          <priority>5</priority>
+          <desc>Emerging Threats DNSBL block list</desc>
+        </row>
+
+        <!-- URLhaus active malware distribution -->
+        <row>
+          <aliasname>SURU_URLhaus_Malware</aliasname>
+          <action>Deny Both</action>
+          <url>https://urlhaus.abuse.ch/downloads/domainlist/</url>
+          <format>Domain</format>
+          <state>Enabled</state>
+          <update>Daily</update>
+          <priority>5</priority>
+          <desc>URLhaus active malware domains — T1588, T1583</desc>
+        </row>
+
+        <!-- PhishTank verified phishing -->
+        <row>
+          <aliasname>SURU_PhishTank</aliasname>
+          <action>Deny Both</action>
+          <url>http://data.phishtank.com/data/online-valid.csv</url>
+          <format>CSV</format>
+          <state>Enabled</state>
+          <update>Daily</update>
+          <priority>5</priority>
+          <desc>PhishTank verified phishing domains — T1566</desc>
+        </row>
+
+        <!-- Disconnect.me tracking prevention -->
+        <row>
+          <aliasname>SURU_Disconnect_Tracking</aliasname>
+          <action>Deny Both</action>
+          <url>https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt</url>
+          <format>Domain</format>
+          <state>Enabled</state>
+          <update>Weekly</update>
+          <priority>2</priority>
+          <desc>Disconnect.me tracking domains</desc>
+        </row>
+
+      </dnsblfeeds>
+    </dnsbl>
+  </pfblockerng>
+</pfsense>

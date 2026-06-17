@@ -1,0 +1,8 @@
+# Frontdoor TLS material — issued locally by scripts/generate-frontdoor-cert.sh
+certs/*.pem
+certs/*.key
+certs/*.csr
+certs/*.srl
+
+# Materialised at container start by scripts/entrypoint.sh from .env
+config/auth/htpasswd

@@ -1,0 +1,102 @@
+# SURU Platform — pfBlockerNG IPv4 reputation feed manifest
+# =============================================================================
+# This is the SOURCE OF TRUTH for SURU-managed IPv4 reputation aliases.
+# The render pipeline consumes this file and emits PHP fragments into
+# tier1-perimeter/rendered/pfsense/pfblockerng/pfblockerng-import.php which
+# writes the entries into pfSense's installedpackages/pfblockernglistsv4/config
+# via config_set_path + write_config — the GUI-aware API.
+#
+# Aliasname convention: every SURU-managed alias must be prefixed `SURU_`.
+# The applier merges by aliasname; user-managed aliases (any name not starting
+# `SURU_`) are preserved across deploys.
+#
+# Action values (pfBlockerNG-internal strings):
+#   Deny_Both     — block in both directions; floats a Block rule on each iface
+#   Deny_Inbound  — block traffic FROM listed IPs into local network (WAN→LAN)
+#   Deny_Outbound — block traffic TO listed IPs from local network
+#   Permit_Both   — explicit allow (rare; for trusted partner ranges)
+#
+# Cron values: EveryDay | EveryHour | Weekly | etc.
+#
+# Feed format:
+#   auto      — let pfBlockerNG detect (works for txt, csv, json with .json url)
+#   v4        — explicit IPv4 list
+#
+# Sources curated for SOHO/SMB perimeter use. Each entry includes a MITRE
+# ATT&CK Tactic annotation.
+
+aliases:
+
+  # ---------------------------------------------------------------------------
+  # SURU_IP_C2 — Active Command & Control infrastructure
+  # MITRE ATT&CK: TA0011 (Command and Control), TA0010 (Exfiltration)
+  # Hourly-updated feeds tracking malware C2 endpoints. High signal, low noise.
+  # Block in BOTH directions: prevents both inbound C2 callbacks from
+  # compromised hosts and inbound scans from known-bad infra.
+  # ---------------------------------------------------------------------------
+  - aliasname: SURU_IP_C2
+    description: "SURU Tier 1 — Active C2 infrastructure (FeodoTracker, SSLBL, Talos, ET compromised)"
+    action: Deny_Both
+    cron: EveryDay
+    feeds:
+      - header: SURU_FeodoTracker
+        url: https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt
+        format: auto
+        state: Enabled
+      - header: SURU_SSLBL
+        url: https://sslbl.abuse.ch/blacklist/sslipblacklist.txt
+        format: auto
+        state: Enabled
+      - header: SURU_TalosBL
+        url: https://talosintelligence.com/documents/ip-blacklist
+        format: auto
+        state: Enabled
+      - header: SURU_ETCompromised
+        url: https://rules.emergingthreats.net/blockrules/compromised-ips.txt
+        format: auto
+        state: Enabled
+
+  # ---------------------------------------------------------------------------
+  # SURU_IP_REP — General reputation / known-malicious networks
+  # MITRE ATT&CK: TA0001 (Initial Access), TA0040 (Impact)
+  # Spamhaus DROP/EDROP catches hijacked netblocks and bulletproof hosting.
+  # CINS Army & ET Block IPs aggregate scanner + abuse community feedback.
+  # ---------------------------------------------------------------------------
+  - aliasname: SURU_IP_REP
+    description: "SURU Tier 1 — IP reputation (Spamhaus DROP+EDROP, CINS, ET Block)"
+    action: Deny_Both
+    cron: EveryDay
+    feeds:
+      - header: SURU_SpamhausDrop
+        url: https://www.spamhaus.org/drop/drop_v4.json
+        format: auto
+        state: Enabled
+      - header: SURU_SpamhausEdrop
+        url: https://www.spamhaus.org/drop/edrop.txt
+        format: auto
+        state: Enabled
+      - header: SURU_CINS
+        url: https://cinsarmy.com/list/ci-badguys.txt
+        format: auto
+        state: Enabled
+      - header: SURU_ETBlock
+        url: https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt
+        format: auto
+        state: Enabled
+
+  # ---------------------------------------------------------------------------
+  # SURU_IP_SCAN — Active scanner sources (inbound-only)
+  # MITRE ATT&CK: TA0043 (Reconnaissance)
+  # Hosts actively scanning the internet for exposed services. Only
+  # blocked inbound — outbound to these is normally desired (research,
+  # security tooling). DShield is operator-curated and reasonably noiseless.
+  # ---------------------------------------------------------------------------
+  - aliasname: SURU_IP_SCAN
+    description: "SURU Tier 1 — Inbound scanners (DShield)"
+    action: Deny_Inbound
+    cron: EveryDay
+    feeds:
+      - header: SURU_DShield
+        url: https://isc.sans.edu/block.txt
+        format: auto
+        state: Enabled

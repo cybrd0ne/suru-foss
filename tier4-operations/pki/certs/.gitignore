@@ -1,0 +1,7 @@
+# Private keys — never commit
+*-key.pem
+# Leaf certs — generated at runtime, not committed
+*.pem
+# Except the public Root CA cert and serial
+!root-ca.pem
+!root-ca.srl

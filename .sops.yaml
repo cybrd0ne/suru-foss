@@ -1,0 +1,9 @@
+# Optional: SOPS + age rules for encrypting repo secrets (files matching *.enc.*).
+# Replace the placeholder below with YOUR age public key:
+#   age-keygen -o age.key            # keep age.key private (gitignored)
+#   grep 'public key' age.key        # copy the age1... recipient here
+# Then: sops <file>.enc.yaml   (see the Makefile's sops-* helper targets)
+creation_rules:
+  - path_regex: \.enc\.(ya?ml|json|env|tfvars)$
+    age: >-
+      age1REPLACE_WITH_YOUR_OWN_AGE_PUBLIC_KEY_RECIPIENT_0000000000000000

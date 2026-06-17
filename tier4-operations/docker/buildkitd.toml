@@ -1,0 +1,26 @@
+# SURU Platform — BuildKit daemon GC policy
+# Deployed to /etc/buildkit/buildkitd.toml on Docker hosts that build images.
+# Tier 4 host only — Tier 3 is pull-only and does not need this file.
+#
+# Deploy via: bash tier4-operations/scripts/deploy.sh configure-host
+#
+# The build cache grows unbounded without this file. With it, BuildKit
+# auto-evicts least-recently-used layers when the cache exceeds gckeepstorage.
+
+[worker.oci]
+  gc = true
+
+  # Hard ceiling on total build-cache storage (10 GB in bytes).
+  # GC fires when total cache exceeds this.
+  gckeepstorage = 10737418240
+
+  # Policy 1 — unconditionally retain 512 MB accessed in the last 48h.
+  # Protects in-progress build layers from mid-build eviction.
+  [[worker.oci.gcpolicy]]
+    keepDuration = "48h"
+    keepBytes = 536870912
+
+  # Policy 2 — everything above the ceiling is fair game.
+  [[worker.oci.gcpolicy]]
+    all = true
+    keepBytes = 10737418240

@@ -1,0 +1,41 @@
+---
+# SURU OpenSearch Security — Internal users
+# Passwords are bcrypt-hashed at container runtime by suru.t3.datalake.security-init
+# Placeholders (ADMIN_BCRYPT_HASH etc.) are replaced by the init script.
+_meta:
+  type: "internalusers"
+  config_version: 2
+
+admin:
+  hash: "ADMIN_BCRYPT_HASH"
+  reserved: true
+  backend_roles:
+    - "admin"
+  attributes:
+    # Force admin into Global tenant with full explore/discover capabilities
+    default_tenant: "global_tenant"
+  description: "SURU platform administrator — full access, global tenant"
+
+logstash:
+  hash: "LOGSTASH_BCRYPT_HASH"
+  reserved: false
+  backend_roles:
+    - "logstash"
+  description: "Logstash ingest user — write suru-* indices only"
+
+kibanaserver:
+  hash: "DASHBOARDS_BCRYPT_HASH"
+  reserved: true
+  backend_roles:
+    - "kibana_server"
+  description: "OpenSearch Dashboards backend service account"
+
+mysecurity:
+  hash: "MYSECURITY_BCRYPT_HASH"
+  reserved: false
+  backend_roles:
+    - "suru_security_analyst"
+  attributes:
+    # Default to Global tenant so shared dashboards are visible on login
+    default_tenant: "global_tenant"
+  description: "SURU security analyst — dashboards, Security Analytics, Observability read access"

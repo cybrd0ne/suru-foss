@@ -1,0 +1,44 @@
+# Grafana auto-provisioned datasources
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://suru-t4-monitoring-prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+    version: 1
+    editable: false
+
+  - name: InfluxDB-SIEM
+    type: influxdb
+    access: proxy
+    url: http://suru-t4-monitoring-influxdb:8086
+    jsonData:
+      version: Flux
+      organization: "${INFLUXDB_ORG}"
+      defaultBucket: "${INFLUXDB_BUCKET}"
+      tlsSkipVerify: false
+    secureJsonData:
+      token: "${INFLUXDB_TOKEN}"
+    version: 1
+    editable: false
+
+  - name: OpenSearch-SIEM
+    type: grafana-opensearch-datasource
+    access: proxy
+    url: https://suru-t3-datalake-opensearch:9200
+    basicAuth: true
+    basicAuthUser: admin
+    jsonData:
+      database: suru-*
+      timeField: "@timestamp"
+      version: "2.x"
+      flavor: opensearch
+      tlsSkipVerify: true
+    secureJsonData:
+      basicAuthPassword: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+    version: 1
+    editable: false

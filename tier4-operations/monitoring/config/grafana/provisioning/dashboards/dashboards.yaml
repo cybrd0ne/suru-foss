@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: SURU Dashboards
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      # Must match the dashboards mount under GF_PATHS_DATA (/var/lib/suru-grafana),
+      # not Grafana's default /var/lib/grafana — this image runs with a custom data path.
+      path: /var/lib/suru-grafana/dashboards
+      foldersFromFilesStructure: true

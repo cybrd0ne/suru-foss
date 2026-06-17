@@ -1,0 +1,267 @@
+# SURU — Tier 4 Operations / Group: frontdoor  /  Engine: proxy
+# Services:
+#   suru.t4.frontdoor.proxy    nginx reverse proxy + stream LB (bridge networks)
+#   suru.t4.frontdoor.mdns     avahi mDNS responder (network_mode: host)
+#   suru.t4.frontdoor.content  git-sync sidecar pulling suru-frontdoor-content
+# Container naming: suru.t<N>.<group>.<function>
+# Validate: docker compose config
+# Start:    docker compose up -d (after tier3-core datalake-opensearch is healthy
+#           and tier4-operations/monitoring is up; this stack attaches to the
+#           external networks suru-t3-core-internal and suru-t4-monitoring-internal
+#           to reach backend services)
+# Prerequisites (one-time per host):
+#   1. tier4-operations/pki/scripts/generate-certs.sh — issues SURU root CA
+#   2. cp tier4-operations/.env.example tier4-operations/.env; fill in
+#      FRONTDOOR_FQDN / PORT / IP / BASIC_AUTH_USER / ..._PASSWORD
+#   3. tier4-operations/frontdoor/proxy/scripts/generate-frontdoor-cert.sh
+#                                                   — issues frontdoor.pem
+#      (or run via:  bash tier4-operations/scripts/deploy.sh certs)
+#
+# Routing is driven by config/routes.yaml; re-render with
+# scripts/render-routes.sh after editing the manifest.
+
+name: suru-t4-frontdoor
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-restart: &restart-unless-stopped
+  restart: unless-stopped
+
+# ─── Networks ───────────────────────────────────────────────────────────────────
+# The frontdoor is the ONLY container with host port bindings. It joins:
+#   • frontdoor-external — bridge with the host port mapping (LAN ingress).
+#   • suru-t3-core-internal — to reach datalake, ingestion, and (via aliases)
+#     monitoring backends.
+networks:
+  frontdoor-external:
+    name: suru-t4-frontdoor-external
+    driver: bridge
+    labels:
+      project: suru
+      group: frontdoor
+      managed_by: compose
+
+  core-internal:
+    name: suru-t3-core-internal
+    external: true
+
+# ─── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  frontdoor-content:
+    name: suru-t4-frontdoor-content
+    labels:
+      project: suru
+      group: frontdoor
+      component: suru-t4-frontdoor-content
+
+
+# ─── Services ──────────────────────────────────────────────────────────────────
+services:
+
+  # ── Frontdoor (nginx reverse proxy + stream LB) ───────────────────────────
+  # Container: suru.t4.frontdoor.proxy
+  suru.t4.frontdoor.proxy:
+    # Built from ./Dockerfile: nginx:1.27-alpine (digest-pinned) + apache2-utils
+    # baked in at build time. The container runs non-root (SEC-030), so the
+    # htpasswd tool cannot be installed via `apk` at runtime — it must be in the
+    # image. Compose builds this on first `up` and caches it.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: suru-t4-frontdoor-proxy:local
+    container_name: suru.t4.frontdoor.proxy
+    hostname: suru-t4-frontdoor-proxy
+    <<: *restart-unless-stopped
+    user: "101:101"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE  # nginx binds to ports 80 and 443
+    tmpfs:
+      # entrypoint writes htpasswd here; nginx writes its SNI map to /run/nginx/
+      # mode=1777: world-writable + sticky, allows uid 101 (nginx) to write
+      - /etc/nginx/auth:size=4m,mode=1777
+      - /run:size=16m,mode=1777
+      - /var/cache/nginx:size=64m,mode=1777
+      - /tmp:size=32m,mode=1777
+    environment:
+      FRONTDOOR_FQDN: "${FRONTDOOR_FQDN:-suru.local}"
+      FRONTDOOR_BASIC_AUTH_USER: "${FRONTDOOR_BASIC_AUTH_USER}"
+      FRONTDOOR_BASIC_AUTH_PASSWORD: "${FRONTDOOR_BASIC_AUTH_PASSWORD}"
+      FRONTDOOR_INGESTION_FQDNS: "${FRONTDOOR_INGESTION_FQDNS:-}"
+    # apache2-utils (bcrypt htpasswd) is baked into the image at build time, so
+    # the entrypoint runs directly — no privileged runtime package install.
+    command: ["/suru/entrypoint.sh"]
+    volumes:
+      # Read-only nginx config, routes, certs, entrypoint
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/http:/etc/nginx/http:ro
+      - ./config/stream:/etc/nginx/stream:ro
+      # certs/ ships frontdoor.pem + a Root CA copy (root-ca.pem) placed there by
+      # generate-frontdoor-cert.sh. Do NOT nest a separate root-ca.pem file-mount
+      # inside this read-only directory mount — Docker cannot create the nested
+      # mountpoint and the container fails to start ("read-only file system").
+      - ./certs:/etc/nginx/certs:ro
+      - ./scripts/entrypoint.sh:/suru/entrypoint.sh:ro
+      # Read-only synced content (written by suru.t4.frontdoor.content)
+      - frontdoor-content:/var/www/content:ro
+    ports:
+      # HTTP redirect → HTTPS
+      - "80:80"
+      - "${FRONTDOOR_PORT:-443}:443"  # stream ssl_preread demux: syslog SNI → logstash-pfsense:5140; default → 8443 HTTPS
+
+      # Stream listeners — host-side port mappings match config/stream/*.conf
+      # listen directives one-for-one. When adding a new stream_route in
+      # routes.yaml, add the matching host port here.
+      - "5044:5044"      # Beats TLS — logstash-pfsense
+    networks:
+      frontdoor-external:
+        aliases:
+          - suru-t4-frontdoor-proxy
+      core-internal:
+        aliases:
+          - suru-t4-frontdoor-proxy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "--cacert", "/etc/nginx/certs/root-ca.pem", "https://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+
+  # ── Content volume init ────────────────────────────────────────────────────
+  # The content-sync sidecar runs as uid 1001 (SEC-038); the shared
+  # frontdoor-content volume is created root-owned, so chown it to 1001 before
+  # the sidecar starts or git cannot write the working tree. Idempotent.
+  suru.t4.frontdoor.content-volume-init:
+    image: busybox:1.37.0@sha256:7a3ebe5bfd1a4a19797d20b0c0bb39d44393e9a03fd852c0865b0f540d868df0
+    container_name: suru.t4.frontdoor.content-volume-init
+    restart: "no"
+    user: root
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # CHOWN is sufficient: the init runs as root and only changes ownership
+      # (no chmod → no FOWNER; root reaches every path here → no DAC_OVERRIDE).
+      - CHOWN
+    command: ["sh", "-c", "chown -R 1001:1001 /content && echo '[content-volume-init] /content ownership set to 1001:1001'"]
+    volumes:
+      - frontdoor-content:/content
+    network_mode: "none"
+    logging: *default-logging
+
+  # ── Content sync (git-sync sidecar) ───────────────────────────────────────
+  # Container: suru.t4.frontdoor.content
+  # Periodically clones suru-frontdoor-content into the shared
+  # `frontdoor-content` volume; nginx serves the result at /. The
+  # token is fed to git via GIT_ASKPASS inside the container and is
+  # never persisted to disk.
+  # No image: tag — Compose builds from ./content-sync on first up
+  # and caches locally; never pushed to any registry.
+  suru.t4.frontdoor.content:
+    build:
+      context: ./content-sync
+    image: suru-t4-frontdoor-content:local
+    container_name: suru.t4.frontdoor.content
+    hostname: suru-t4-frontdoor-content
+    <<: *restart-unless-stopped
+    # Runs as uid 1001 (set via USER in ./content-sync/Dockerfile). Drop all
+    # capabilities — git-over-HTTPS needs none — and block privilege escalation.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      suru.t4.frontdoor.content-volume-init:
+        condition: service_completed_successfully
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      CONTENT_REPO_URL: "${CONTENT_REPO_URL:-https://github.com/cybrd0ne/suru-frontdoor-content.git}"
+      CONTENT_REPO_REF: "${CONTENT_REPO_REF:-main}"
+      CONTENT_REPO_TOKEN: "${CONTENT_REPO_TOKEN}"
+      CONTENT_SYNC_PERIOD: "${CONTENT_SYNC_PERIOD:-60s}"
+    volumes:
+      - frontdoor-content:/content
+    networks:
+      # Outbound to github.com — frontdoor-external has no `internal: true`
+      # flag, so default outbound routing works. No ports: mapping is added,
+      # so this container is not LAN-reachable.
+      - frontdoor-external
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /content/public/index.html"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  # ── mDNS responder (avahi sidecar) ────────────────────────────────────────
+  # Container: suru.t4.frontdoor.mdns
+  # Advertises FRONTDOOR_MDNS_ALIASES (default: suru.local, soc.local) on the
+  # LAN as A records pointing at FRONTDOOR_IP, so macOS/Linux clients resolve
+  # them without router DNS.
+  #
+  # `network_mode: host` is REQUIRED — mDNS multicast (UDP 5353) does not
+  # traverse Docker bridge networks. On macOS Docker Desktop, host networking
+  # runs inside Docker's VM (not the Mac), so this advertises into the VM
+  # only; on Linux SOHO hardware it advertises onto the real LAN as expected.
+  #
+  # The proxy container above stays on its bridge networks (it needs Docker
+  # DNS to reach backends); this small sidecar handles the LAN-side mDNS
+  # work without compromising that.
+  # No image: tag — Compose builds from ./mdns on first up and caches
+  # locally; never pushed to any registry.
+  suru.t4.frontdoor.mdns:
+    build:
+      context: ./mdns
+    image: suru-t4-frontdoor-mdns:local
+    container_name: suru.t4.frontdoor.mdns
+    hostname: suru-t4-frontdoor-mdns
+    <<: *restart-unless-stopped
+    network_mode: host
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      # avahi-daemon creates /run/avahi-daemon/ at startup; mode=1777 (world-writable + sticky)
+      # is required so the avahi user can mkdir /run/avahi-daemon on the fresh tmpfs.
+      - /run:size=16m,mode=1777
+      - /tmp:size=16m,mode=1777
+    environment:
+      FRONTDOOR_IP: "${FRONTDOOR_IP}"
+      FRONTDOOR_MDNS_ALIASES: "${FRONTDOOR_MDNS_ALIASES:-suru.local,soc.local}"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep avahi-daemon >/dev/null && [[ -f /run/avahi-daemon/pid ]]"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 16M

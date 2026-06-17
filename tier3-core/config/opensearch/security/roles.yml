@@ -1,0 +1,100 @@
+---
+# SURU OpenSearch Security — Custom roles
+_meta:
+  type: "roles"
+  config_version: 2
+
+# Logstash ingest role — write to suru-* indices only
+suru_logstash:
+  cluster_permissions:
+    - "cluster_monitor"
+    - "cluster_composite_ops"
+    - "indices:data/write/bulk*"
+    - "indices:admin/template/get"
+    - "indices:admin/template/put"
+  index_permissions:
+    # suru-* already covers suru-ecs-*; least-privilege ingest set only.
+    # NO "indices_all"/"manage": index delete/close/settings is reserved for the
+    # ISM-managed lifecycle, never the ingest account. A compromised Logstash or a
+    # bad pipeline output must not be able to delete suru-* indices.
+    - index_patterns:
+        - "suru-*"
+      allowed_actions:
+        - "crud"                       # read+write documents (incl. bulk), no index admin
+        - "create_index"               # create the daily index + put initial mappings
+        - "indices:data/write/bulk*"   # explicit: bulk writes
+        - "indices:admin/mapping/put"  # dynamic mapping updates during ingest
+
+# Dashboards read role — read suru-* indices
+suru_dashboards_read:
+  cluster_permissions:
+    - "cluster_monitor"
+    - "cluster_composite_ops_ro"
+  index_permissions:
+    - index_patterns:
+        - "suru-*"
+      allowed_actions:
+        - "read"
+        - "indices:monitor/*"
+
+# ── SURU Security Analyst role ────────────────────────────────────────────────
+# Normal user role: read-only access to SIEM data, dashboards, Security Analytics
+# and Observability. No administrative, privilege or configuration access.
+suru_security_analyst:
+  reserved: false
+  description: "SURU security analyst — read-only SIEM, Security Analytics, Observability"
+  cluster_permissions:
+    - "cluster_monitor"
+    - "cluster_composite_ops_ro"
+    # Security Analytics — read detectors, findings, alerts, rules, correlations
+    - "cluster:admin/opensearch/securityanalytics/detector/get"
+    - "cluster:admin/opensearch/securityanalytics/detector/search"
+    - "cluster:admin/opensearch/securityanalytics/findings/get"
+    - "cluster:admin/opensearch/securityanalytics/alerts/get"
+    - "cluster:admin/opensearch/securityanalytics/rules/get"
+    - "cluster:admin/opensearch/securityanalytics/rules/search"
+    - "cluster:admin/opensearch/securityanalytics/correlations/findings"
+    # Observability — read panels, visualizations, saved queries
+    - "cluster:admin/opensearch/observability/object/get"
+    - "cluster:admin/opensearch/observability/object/search"
+  index_permissions:
+    # SURU data indices — read-only
+    - index_patterns:
+        - "suru-*"
+      allowed_actions:
+        - "read"
+        - "indices:monitor/stats"
+        - "indices:monitor/settings/get"
+    # OpenSearch Dashboards saved objects — read (needed to load dashboards/visualizations)
+    - index_patterns:
+        - ".kibana*"
+        - ".opensearch_dashboards*"
+      allowed_actions:
+        - "read"
+        - "indices:data/read/get"
+        - "indices:data/read/mget"
+        - "indices:data/read/search"
+    # Security Analytics system indices — read findings, alerts, detectors
+    - index_patterns:
+        - ".opensearch-sap-*"
+        - ".opensearch-detectors-config"
+        - ".opensearch-findings*"
+        - ".opensearch-alerts*"
+      allowed_actions:
+        - "read"
+    # Observability system indices — read panels
+    - index_patterns:
+        - ".opensearch-observability*"
+      allowed_actions:
+        - "read"
+  tenant_permissions:
+    # Access Global tenant (shared dashboards) in read-write so user can set preferences
+    - tenant_patterns:
+        - "global_tenant"
+      allowed_actions:
+        - "kibana_all_read"
+    # Access private tenant for personal saved objects
+    - tenant_patterns:
+        - "~user__mysecurity"
+      allowed_actions:
+        - "kibana_all_write"

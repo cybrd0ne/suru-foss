@@ -1,0 +1,71 @@
+# SURU — OPTIONAL custom OpenSearch image
+# ─────────────────────────────────────────────────────────────────────────────
+# NOT used by default. compose.yaml uses opensearchproject/opensearch:latest.
+#
+# Build this image ONLY if you want the Aiven Prometheus Exporter plugin
+# pre-installed (adds /_prometheus/metrics on port 9200 in addition to
+# Performance Analyzer on port 9600).
+#
+# Build:
+#   docker build -f Dockerfile.opensearch -t suru-opensearch:local .
+# Then in .env set:
+#   OPENSEARCH_IMAGE=suru-opensearch:local
+# And in compose.yaml replace:
+#   image: opensearchproject/opensearch:latest
+# with:
+#   image: ${OPENSEARCH_IMAGE:-opensearchproject/opensearch:latest}
+# ─────────────────────────────────────────────────────────────────────────────
+# SURU — Custom OpenSearch image
+# Adds: Aiven Prometheus Exporter Plugin (version-matched to base image)
+#       Performance Analyzer pre-configured with webservice-bind-host=0.0.0.0
+#
+# Build: docker build -t suru-opensearch:local .
+# The build script (deploy.sh build-opensearch) handles this automatically.
+
+ARG OPENSEARCH_VERSION=latest
+FROM opensearchproject/opensearch:${OPENSEARCH_VERSION}
+
+USER root
+
+# ── Install Aiven Prometheus Exporter Plugin ──────────────────────────────────
+# The plugin version must exactly match the OpenSearch version.
+# We detect the installed version at build time and download the matching zip.
+RUN set -eux; \
+    OS_VERSION="$(cat /usr/share/opensearch/VERSION 2>/dev/null \
+                  || /usr/share/opensearch/bin/opensearch --version 2>/dev/null \
+                  | grep -oP 'Version: \K[0-9]+\.[0-9]+\.[0-9]+' || true)"; \
+    if [ -z "$OS_VERSION" ]; then \
+      # fallback: parse from opensearch jar manifest
+      OS_VERSION="$(find /usr/share/opensearch/lib -name 'opensearch-*.jar' \
+                    | head -1 | grep -oP 'opensearch-\K[0-9]+\.[0-9]+\.[0-9]+')"; \
+    fi; \
+    echo "Detected OpenSearch version: ${OS_VERSION}"; \
+    PLUGIN_URL="https://github.com/aiven/prometheus-exporter-plugin-for-opensearch/releases/download/${OS_VERSION}.0/prometheus-exporter-${OS_VERSION}.0.zip"; \
+    echo "Installing Prometheus exporter from: ${PLUGIN_URL}"; \
+    /usr/share/opensearch/bin/opensearch-plugin install --batch "${PLUGIN_URL}" || \
+      (echo "WARNING: Prometheus exporter plugin not available for ${OS_VERSION} — skipping" && true)
+
+# ── Pre-configure Performance Analyzer ───────────────────────────────────────
+# webservice-bind-host = 0.0.0.0 is required for external access from containers
+# /dev/shm size is set in compose.yaml via shm_size: 1g
+RUN set -eux; \
+    PA_PROPS="/usr/share/opensearch/config/opensearch-performance-analyzer/performance-analyzer.properties"; \
+    if [ -f "$PA_PROPS" ]; then \
+      sed -i 's/^#\?webservice-bind-host.*/webservice-bind-host = 0.0.0.0/' "$PA_PROPS"; \
+      sed -i 's/^#\?webservice-listener-port.*/webservice-listener-port = 9600/' "$PA_PROPS"; \
+      echo "Performance Analyzer configured: webservice-bind-host=0.0.0.0"; \
+    else \
+      echo "WARNING: performance-analyzer.properties not found — PA may not be bundled in this release"; \
+    fi
+
+# ── Add Prometheus plugin static settings to opensearch.yml template ──────────
+# These are appended; the actual opensearch.yml is volume-mounted at runtime.
+# We write them to a defaults file that config-init merges in.
+RUN echo "prometheus.metric_name.prefix: opensearch_" >> /usr/share/opensearch/config/opensearch.yml.prometheus_defaults && \
+    echo "prometheus.indices: true" >> /usr/share/opensearch/config/opensearch.yml.prometheus_defaults && \
+    echo "prometheus.nodes.filter: _local" >> /usr/share/opensearch/config/opensearch.yml.prometheus_defaults && \
+    echo "prometheus.cluster.settings: true" >> /usr/share/opensearch/config/opensearch.yml.prometheus_defaults
+
+USER 1000
+
+EXPOSE 9200 9300 9600 9650

@@ -1,0 +1,26 @@
+# SURU Custom Rules — Command and Control Beaconing Detection
+# MITRE ATT&CK: TA0011 Command and Control / T1071 Application Layer Protocol
+#
+# SID block: 9990000–9999999 (SURU project-local range; never overlaps ET Open)
+#
+# Each rule MUST be on a single physical line — Suricata requires it.
+# Validation: suricata -T -S suru-c2-beacons.rules
+#   (or: ssh admin@gw.suru.local sudo suricata -T -c /usr/local/etc/suricata/suricata_20574_igb1.10/suricata.yaml -S /tmp/suru-c2-beacons.rules)
+
+# ── Rule 9990001 — HTTP C2 Beaconing via short fixed-interval URI (TA0011/T1071) ──────────
+# Detects repeated short dot-free URIs (common in implant check-in paths like /ab or /x1).
+# urilen:1<>8 + content:!"." filters out file-extension requests (.css, .js, .html, /api/v2/...).
+# detection_filter absorbs burst noise; 20 events per source in 60s is the alert threshold.
+# False positives: CDN healthcheck endpoints, analytics beacons, short-path REST APIs.
+# Tune count/seconds per environment before enabling in production.
+alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"SURU C2 Beaconing - Short fixed-interval URI (TA0011/T1071)"; flow:established,to_server; urilen:1<>8; http.uri; content:!"."; detection_filter:track by_src, count 20, seconds 60; classtype:trojan-activity; sid:9990001; rev:2; metadata:tactic TA0011, technique T1071, affected_product Any, deployment Perimeter, falsepositives CDN_healthcheck_analytics_and_short_path_REST_APIs;)
+
+# ── Rule 9990002 — DNS Tunneling via long subdomain (TA0011/T1071.004) ──────────────────
+# Detects DNS queries with a 40+ character all-alphanum label before a dot.
+# 40-char threshold reduces FP from 30-char CDN/DKIM/SPF labels (SEC-042).
+# Note: dns.query matches the query name in BOTH the request AND the echoed question in the
+# DNS response packet, yielding approximately 2x fire rate per tunnel session; the
+# detection_filter absorbs this so the 5-count threshold is effectively 2-3 real sessions.
+# False positives: DKIM selectors, SPF TXT lookups, long CDN CNAME labels, random-subdomain
+# TLSA/DANE records. Cross-reference with destination IP reputation before escalating.
+alert dns $HOME_NET any -> any 53 (msg:"SURU C2 DNS Tunneling - Long subdomain query (TA0011/T1071.004)"; flow:stateless; dns.query; pcre:"/^[a-z0-9]{40,}\./i"; detection_filter:track by_src, count 5, seconds 60; classtype:trojan-activity; sid:9990002; rev:2; metadata:tactic TA0011, technique T1071.004, affected_product Any, deployment Perimeter, falsepositives DKIM_selectors_SPF_TXT_DANE_TLSA_long_CDN_CNAME_labels;)

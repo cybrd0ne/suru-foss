@@ -1,0 +1,34 @@
+# tier2-telemetry/zeek — Zeek Detection Scripts & Intel
+
+This directory contains all SURU-authored Zeek detection scripts and IOC intel feeds.
+It is consumed by the Tier 1 render pipeline to assemble the final `local.zeek` and
+populate the Zeek intel directory on the router.
+
+## Directory Layout
+
+```
+zeek/
+├── scripts/             # Custom Zeek detection and telemetry scripts
+│   ├── suru-base.zeek            # Engine bootstrap — base protocols, intel framework, log dir (GUI-save resilient)
+│   ├── soho-telemetry.zeek       # Flow suppression — local-to-local noise reduction
+│   ├── suru-dns-entropy.zeek     # DNS tunneling detection (TA0011/T1071.004)
+│   └── suru-ssl-ja3.zeek.optional # JA3/JA3S fingerprinting (TA0011/T1071) — disabled (.optional; rename to .zeek to enable)
+└── intel/               # Zeek Intelligence Framework feeds
+    └── suru-ioc.dat     # SURU IOC feed (domain/IP/hash format)
+```
+
+## Invariant
+
+Zeek detection logic lives here, not in `tier1-perimeter/`. The T1 template
+(`tier1-perimeter/templates/zeek/local.zeek.tpl`) only contains the engine bootstrap;
+all `@load site/scripts/*` directives are injected by the render pipeline from this directory.
+
+## MITRE ATT&CK Annotations
+
+Every `.zeek` script in `scripts/` MUST have a header comment with tactic and technique IDs.
+
+## Validation
+
+```bash
+zeek -b scripts/suru-dns-entropy.zeek
+```
