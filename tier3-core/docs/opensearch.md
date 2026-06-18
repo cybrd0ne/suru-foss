@@ -122,6 +122,38 @@ docker exec suru.t3.datalake.opensearch \
 - **Priority:** 100 — matches the ISM policy `ism_template` priority so both
   apply consistently to new indices.
 
+### Mapping structure — nested objects, not dotted keys
+
+Every multi-segment ECS field is declared as a **nested `object` + `properties`** tree,
+not as a dotted-leaf key (`"source.ip": {"type":"ip"}`). Dotted keys in an OpenSearch
+`properties` block register as literal field names, not as nested object paths — they
+receive no data from Logstash (which serialises `[source][ip]` as a true nested JSON
+object), causing `source.ip` to appear empty in dashboards while the `source` field
+displays a serialised hash blob.
+
+**Anti-pattern (wrong):**
+```json
+"properties": {
+  "source.ip": { "type": "ip" }
+}
+```
+
+**Correct:**
+```json
+"properties": {
+  "source": {
+    "properties": {
+      "ip": { "type": "ip" }
+    }
+  }
+}
+```
+
+All 15 ECS object groups (`source`, `destination`, `event`, `network`, `observer`,
+`rule`, `dns`, `dhcp`, `http`, `tls`, `threat`, `zeek`, `_suru`, `service`, `host`,
+`process`) are declared as explicit nested objects. Leaf-only fields (`@timestamp`,
+`tags`, `in_iface`) remain at the top level.
+
 ### Pinned canon fields
 
 The following fields are explicitly pinned in `properties` to prevent dynamic
