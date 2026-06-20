@@ -99,6 +99,18 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # This container seeds /config (a uid 1000:1000 named volume — opensearch
+    # itself owns it) and ends its own run with `chown -R 1000:1000 /config`.
+    # On every re-run after the first, /config is therefore already owned by
+    # 1000:1000, not root: without DAC_OVERRIDE/FOWNER/CHOWN, root has no more
+    # write/unlink/chown access to it than any other non-owning user, and
+    # cp/chown/chmod all fail (cp: "File exists" from a masked EACCES on
+    # unlink; chown/chmod: "Permission denied"). cap_drop: ALL alone made this
+    # init non-idempotent — it only ever worked on a fresh, empty volume.
+    cap_add:
+      - DAC_OVERRIDE
+      - FOWNER
+      - CHOWN
     volumes:
       - ../../certs/node.pem:/src/certs/node.pem:ro
       - ../../certs/node-key.pem:/src/certs/node-key.pem:ro
