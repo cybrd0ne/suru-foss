@@ -106,6 +106,40 @@ bash scripts/import-dashboards.sh
 # Dashboards available at https://<SIEM_HOST>:5601
 ```
 
+### 9. Recovery: Admin-Credential Seed/Repair or Empty Dashboards
+
+`scripts/deploy.sh start` automatically detects and repairs two failure modes
+on every run against the `datalake/opensearch` group:
+
+- **Admin credential mismatch** — detected via a `/_cluster/health` probe;
+  on a definitive `401` it re-runs `security-init` with `--no-deps`, since
+  `securityadmin.sh` authenticates via the admin mTLS client cert, not the
+  REST password. This covers two distinct triggers that present identically:
+  - **Fresh bootstrap** — `DISABLE_INSTALL_DEMO_CONFIG=true` disables the
+    image's only password-substitution mechanism, so a brand-new
+    `opensearch-data` volume's security index seeds with the image's bundled
+    default credential, not `OPENSEARCH_INITIAL_ADMIN_PASSWORD`.
+  - **Drift against a surviving volume** — e.g. `.env`'s
+    `OPENSEARCH_INITIAL_ADMIN_PASSWORD` was rotated but the existing security
+    index still has the old hash.
+
+  The probe/repair is unconditional (not gated on whether the volume
+  pre-existed) — disable with `--no-repair-security`.
+- **Empty `.kibana`** after the dashboard-importer runs — verified via
+  `_find?type=dashboard&per_page=1` `.total > 0` (not just that the API
+  answered). One automatic reimport retry; hard-fails if still empty.
+
+For a manual, single-command recovery (e.g. after a failed deploy or a
+suspected password mismatch), run:
+
+```bash
+bash scripts/deploy.sh repair
+```
+
+This re-syncs the security index, re-applies index templates and ISM
+policies, waits for Dashboards to be healthy, re-runs the dashboard importer,
+and verifies the import actually populated `.kibana`.
+
 ---
 
 ## Makefile Targets

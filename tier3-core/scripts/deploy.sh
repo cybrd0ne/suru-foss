@@ -17,6 +17,7 @@ VERBOSE=false
 COMMAND=""
 TARGET_GROUP=""
 TARGET_SERVICE=""
+NO_REPAIR_SECURITY=false
 # Logstash profile selection: "all" (default) | any value in LOGSTASH_PROFILES
 # "all" is overridden at runtime by ROUTER_PLATFORM from .env (pfsense → pfsense,
 # opnsense → default) unless --logstash-profile is passed explicitly.
@@ -81,6 +82,7 @@ usage() {
   printf "  %-18s %s\n" "check"       "API-level health probes (OpenSearch, Dashboards, Logstash)"
   printf "  %-18s %s\n" "logs"        "Tail logs for all groups or one service (--service <name>)"
   printf "  %-18s %s\n" "reimport"    "Re-run the OpenSearch Dashboards importer"
+  printf "  %-18s %s\n" "repair"      "Re-sync security index, re-apply templates/policies, and verify dashboards are imported — single-command recovery"
   printf "  %-18s %s\n" "certs"       "Generate TLS certificates only"
   printf "  %-18s %s\n" "network"     "Create shared Docker networks only"
   printf "  %-18s %s\n" "kernel-tune"     "Set vm.max_map_count=262144 (required by OpenSearch)"
@@ -107,6 +109,7 @@ usage() {
   printf "  %-30s %s\n" "--env <file>"                  "Path to .env file  (default: <tier3>/.env)"
   printf "  %-30s %s\n" "--dry-run"                     "Print commands without executing"
   printf "  %-30s %s\n" "--verbose"                     "Extra output (command echo, wait progress, dep versions)"
+  printf "  %-30s %s\n" "--no-repair-security"          "Skip automatic admin-credential seed/repair during start"
   printf "  %-30s %s\n" "-h | --help"                   "Show this help"
   printf "\n${C_BOLD}EXAMPLES${C_RESET}\n"
   printf "  # First-time full deployment (all logstash profiles)\n"
@@ -140,6 +143,7 @@ parse_args() {
       --group)                TARGET_GROUP="$2"; shift ;;
       --service)              TARGET_SERVICE="$2"; shift ;;
       --logstash-profile)     LOGSTASH_PROFILE="$2"; LOGSTASH_PROFILE_EXPLICIT=true; shift ;;
+      --no-repair-security)   NO_REPAIR_SECURITY=true ;;
       -h|--help)              usage; exit 0 ;;
       *) log WARN "Unknown option: $1" ;;
     esac
@@ -258,6 +262,68 @@ compose_cmd() {
     $VERBOSE && log INFO "Logstash profiles: all (${LOGSTASH_PROFILES[*]})"
   fi
   run docker compose --env-file "$ENV_FILE" --file "$compose_file" "${profile_flags[@]+${profile_flags[@]}}" "$@"
+}
+
+# ── Idempotent one-shot init runner ───────────────────────────────────────────────────
+# Pre-removes any leftover container with the same name before `run --rm`, then runs it.
+# This is the structural fix for "failed to set up container networking: network <id>
+# not found" — a leftover one-shot container from an aborted prior run can pin a deleted
+# network ID, which makes every subsequent `run --rm` for that container name fail.
+#
+# Args:
+#   $1  group           — group path, e.g. "datalake/opensearch" or "ingestion/logstash"
+#   $2  container_name   — the container_name: value in compose.yaml (also the service key)
+#   $3  profile          — Compose profile to pass (e.g. "init", "pfsense", "opnsense")
+#   $@  (remaining)      — extra args appended to the compose `run --rm` invocation
+run_init() {
+  local group="$1" container_name="$2" profile="$3"; shift 3
+  local compose_file="${TIER3_DIR}/${group}/compose.yaml"
+  # Pre-remove any leftover container with this name (e.g. from an aborted prior
+  # run) before `run --rm`. `run()` prints/skips per --dry-run; stderr is
+  # suppressed and `|| true` tolerates "no such container" (matches the
+  # established `docker network rm ... 2>/dev/null || true` idiom below).
+  run docker rm -f "$container_name" 2>/dev/null || true
+  run docker compose --env-file "$ENV_FILE" --file "$compose_file" \
+    --profile "$profile" run --rm "$container_name" "$@"
+}
+
+# ── Container start-time snapshot helpers (recreation detection) ─────────────────────
+# Go zero-time — emitted by `docker inspect` for a container that was Created but has
+# never actually been started (StartedAt is never set in that state).
+readonly _GO_ZERO_TIME="0001-01-01T00:00:00Z"
+
+# snapshot_started_at <container>
+# Echoes "absent" if the container does not exist OR has never been started
+# (StartedAt == Go zero-time); otherwise echoes the real RFC3339 StartedAt value.
+# Always exits 0.
+snapshot_started_at() {
+  local container="$1" started_at
+  started_at="$(docker inspect --format '{{.State.StartedAt}}' -- "$container" 2>/dev/null || true)"
+  if [[ -z "$started_at" || "$started_at" == "$_GO_ZERO_TIME" ]]; then
+    echo "absent"
+  else
+    echo "$started_at"
+  fi
+  return 0
+}
+
+# container_recreated <container> <before_snapshot>
+# Returns 0 (true — needs init) when the container is not currently running, OR its
+# current start-time snapshot differs from <before_snapshot>, OR <before_snapshot> was
+# "absent". Returns 1 (false) only when the container is running AND its start time is
+# unchanged — i.e. a plain restart of an already-up, unchanged container.
+container_recreated() {
+  local container="$1" before="$2"
+  if [[ "$before" == "absent" ]]; then
+    return 0
+  fi
+  local status
+  status="$(docker inspect --format '{{.State.Status}}' -- "$container" 2>/dev/null || echo "missing")"
+  [[ "$status" == "running" ]] || return 0
+  local after
+  after="$(snapshot_started_at "$container")"
+  [[ "$after" == "$before" ]] && return 1
+  return 0
 }
 
 # ── Resolve groups: all or just TARGET_GROUP ─────────────────────────────────────────
@@ -500,6 +566,149 @@ ensure_network_clean() {
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# HELPER: repair_security_credentials_if_needed
+# ═════════════════════════════════════════════════════════════════════════════
+# Probe-driven repair for ANY persistent admin-credential failure against the
+# running OpenSearch container — not just drift against a surviving volume.
+#
+# This also covers a fresh bootstrap: DISABLE_INSTALL_DEMO_CONFIG=true disables
+# the image's only password-substitution mechanism, so on a brand-new
+# opensearch-data volume the security index still seeds with the image's
+# bundled default credential hash, not OPENSEARCH_INITIAL_ADMIN_PASSWORD. The
+# healthcheck (which authenticates with that real password) can never pass
+# until security-init has run — identical deadlock to password drift against a
+# surviving volume. The probe below treats both cases identically: a 401 means
+# "the security index does not have today's admin credential," regardless of
+# whether the volume is new or old, and triggers the same repair.
+#
+# Repair re-runs security-init via its mTLS admin-cert path (securityadmin.sh
+# authenticates with the admin client cert, not the REST password, so it works
+# even though the basic-auth healthcheck is failing).
+#
+# Args: $1 — "force" used by `repair`, an explicit operator-invoked recovery.
+#            No functional difference from the default "gated" mode anymore —
+#            the function is unconditionally probe-driven in both modes; the
+#            arg is retained so call sites stay self-documenting.
+repair_security_credentials_if_needed() {
+  local mode="${1:-gated}"
+
+  if $NO_REPAIR_SECURITY; then
+    log INFO "Automatic admin-credential seed/repair disabled (--no-repair-security) — skipping"
+    return 0
+  fi
+
+  if ! docker inspect suru.t3.datalake.opensearch >/dev/null 2>&1; then
+    $VERBOSE && log INFO "OpenSearch container not present yet — skipping credential check"
+    return 0
+  fi
+
+  if $DRY_RUN; then
+    log INFO "[DRY-RUN] Would probe OpenSearch admin credentials (docker exec curl) and auto-repair security-init on any definitive non-200 response — covers both fresh bootstrap and drift against a surviving volume"
+    return 0
+  fi
+
+  log INFO "Probing OpenSearch admin credentials (mode=${mode})..."
+  local http_code="" attempt=0 max_attempts=12
+  while [[ $attempt -lt $max_attempts ]]; do
+    http_code="$(docker exec suru.t3.datalake.opensearch \
+      curl -sk -o /dev/null -w '%{http_code}' \
+      -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" \
+      https://localhost:9200/_cluster/health 2>/dev/null || true)"
+    # Any well-formed, non-"000" 3-digit HTTP status is a definitive response —
+    # stop polling. This covers 200 (healthy), 401 (credential mismatch), and
+    # 503 (security plugin up but .opendistro_security index doesn't exist yet
+    # — seen live on a genuinely fresh bootstrap with
+    # allow_default_init_securityindex=false, where the plugin never
+    # auto-creates the index and only security-init's securityadmin.sh can).
+    # "000" is curl's documented %{http_code} output on a failed/refused
+    # connection or timeout (curl(1), -w section) — NOT a real HTTP status —
+    # and must be excluded here, or a container whose HTTPS listener simply
+    # hasn't come up yet on attempt 1 gets misclassified as a definitive
+    # failure and short-circuits straight into a repair run against a
+    # not-yet-listening OpenSearch. Empty/connection-refused/000 means
+    # OpenSearch's HTTP listener itself isn't up yet — keep waiting for that
+    # specifically.
+    [[ "$http_code" =~ ^[0-9]{3}$ && "$http_code" != "000" ]] && break
+    attempt=$((attempt + 1))
+    $VERBOSE && log INFO "  OpenSearch not yet answering (attempt ${attempt}/${max_attempts}) — waiting..."
+    sleep 5
+  done
+
+  if [[ "$http_code" == "200" ]]; then
+    $VERBOSE && log OK "Admin credentials valid — no repair needed"
+    return 0
+  elif [[ "$http_code" =~ ^[0-9]{3}$ && "$http_code" != "000" ]]; then
+    log WARN "Admin credentials not yet usable (HTTP ${http_code} from OpenSearch) — auto-repairing security index via admin mTLS cert"
+    log INFO "Re-running security-init, bypassing the service_healthy gate (securityadmin.sh authenticates via admin client cert, not the REST password — and creates .opendistro_security itself if it doesn't exist yet)"
+    run docker compose --env-file "$ENV_FILE" \
+      --file "${TIER3_DIR}/datalake/opensearch/compose.yaml" \
+      run --rm --no-deps suru.t3.datalake.security-init
+    log OK "Security index re-synced — re-probing admin credentials"
+    local recheck
+    recheck="$(docker exec suru.t3.datalake.opensearch \
+      curl -sk -o /dev/null -w '%{http_code}' \
+      -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" \
+      https://localhost:9200/_cluster/health 2>/dev/null || true)"
+    if [[ "$recheck" == "200" ]]; then
+      log OK "Admin credentials valid after repair"
+    else
+      log ERROR "Admin credentials still failing after security-init repair (http_code=${recheck:-none})"
+      return 1
+    fi
+    return 0
+  else
+    $VERBOSE && log WARN "Could not get a definitive health probe response (last http_code='${http_code:-none}') — skipping repair, wait_healthy will report the real failure"
+    return 0
+  fi
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# HELPER: assert_dashboards_imported
+# ═════════════════════════════════════════════════════════════════════════════
+# Verifies that .kibana actually contains imported dashboards (total > 0), not
+# merely that the saved_objects API answered. One auto-reimport retry on an
+# empty/unparseable result; hard-fails (return 1) if still empty after that.
+assert_dashboards_imported() {
+  local group="$1"
+  local dash_user="${OPENSEARCH_DASHBOARDS_USER:-kibanaserver}"
+  local dash_pass="${OPENSEARCH_DASHBOARDS_PASSWORD:-admin}"
+
+  if $DRY_RUN; then
+    log INFO "[DRY-RUN] Would assert dashboards saved_objects total > 0 (and auto-reimport once if empty)"
+    return 0
+  fi
+
+  local total
+  total="$(docker exec suru.t3.datalake.dashboards \
+    curl -sk -u "${dash_user}:${dash_pass}" \
+    'https://localhost:5601/dashboards/api/saved_objects/_find?type=dashboard&per_page=1' \
+    2>/dev/null | jq -r '.total // empty' 2>/dev/null || true)"
+
+  if [[ -n "$total" && "$total" =~ ^[0-9]+$ && "$total" -gt 0 ]]; then
+    log OK "Dashboards saved objects present (total=${total})"
+    return 0
+  fi
+
+  log WARN "Dashboards saved_objects total is ${total:-unparseable} — triggering one auto-reimport attempt"
+  run_init "$group" "suru.t3.datalake.dashboard-importer" "init"
+  sleep 5
+
+  total="$(docker exec suru.t3.datalake.dashboards \
+    curl -sk -u "${dash_user}:${dash_pass}" \
+    'https://localhost:5601/dashboards/api/saved_objects/_find?type=dashboard&per_page=1' \
+    2>/dev/null | jq -r '.total // empty' 2>/dev/null || true)"
+
+  if [[ -n "$total" && "$total" =~ ^[0-9]+$ && "$total" -gt 0 ]]; then
+    log OK "Dashboards saved objects present after auto-reimport (total=${total})"
+    return 0
+  fi
+
+  log ERROR "Dashboards saved_objects total is still ${total:-unparseable} after auto-reimport — .kibana appears empty"
+  log ERROR "Operator recovery: bash scripts/deploy.sh repair"
+  return 1
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
 # COMMAND: start
 # ═════════════════════════════════════════════════════════════════════════════
 cmd_start() {
@@ -517,36 +726,91 @@ cmd_start() {
     case "$group" in
       datalake/opensearch)
         ensure_network_clean "suru-t3-datalake-internal"  "suru-t3-datalake"  "datalake-internal"
-        _os_started_before=$(docker inspect --format '{{.State.StartedAt}}' \
-          suru.t3.datalake.opensearch 2>/dev/null || echo "")
-        _dash_started_before=$(docker inspect --format '{{.State.StartedAt}}' \
-          suru.t3.datalake.dashboards 2>/dev/null || echo "")
+        _os_started_before="$(snapshot_started_at suru.t3.datalake.opensearch)"
+        _dash_started_before="$(snapshot_started_at suru.t3.datalake.dashboards)"
+        # compose.yaml deliberately keeps `depends_on: security-init: condition:
+        # service_healthy` (and the same on dashboards) strict — security-init is
+        # the single authority allowed to seed the security index (SEC-076); we do
+        # not weaken that dependency graph here. Instead, two distinct deadlock
+        # shapes against that strict graph are broken by sequencing the
+        # `compose up -d` calls below, not by editing compose.yaml:
+        #
+        # Branch A — container already existed from a prior run
+        # ("$_os_started_before" != "absent"): opensearch may currently be
+        # unhealthy (e.g. it exhausted its healthcheck retries waiting on admin
+        # credentials that were never seeded). In that case a plain
+        # `compose up -d` for the whole group refuses to proceed at all:
+        # security-init/dashboards depend on `opensearch: condition:
+        # service_healthy`, and compose treats an already-unhealthy dependency as
+        # fatal before attempting to start anything — "dependency ... failed to
+        # start: container ... is unhealthy" — aborting before the post-up-d
+        # repair call further down ever runs. Repair (and let the healthcheck
+        # catch up) BEFORE the shared full `up -d` below, so compose sees a
+        # healthy dependency by the time it evaluates the condition.
+        #
+        # Branch B — true first-ever bootstrap
+        # ("$_os_started_before" == "absent"): there is nothing to probe/repair
+        # yet (Branch A's guard correctly skips), but a plain `compose up -d` for
+        # the whole group is ITSELF the deadlock here: opensearch's healthcheck
+        # can only ever pass once security-init has seeded the security index via
+        # the admin mTLS cert (bypassing the broken REST password) — but
+        # security-init/dashboards are gated behind that exact same
+        # `service_healthy` condition on opensearch, so compose never even
+        # attempts to start security-init. The group blocks for the full
+        # healthcheck retry budget (~270s) and then fails outright. Break this by
+        # bringing up ONLY opensearch first (explicit service arg — NOT
+        # `--no-deps`, so compose still resolves and starts opensearch's own
+        # `service_completed_successfully` dependency on config-init; naming
+        # opensearch as the target rather than the whole group is what excludes
+        # security-init/dashboards, which depend on opensearch itself), then
+        # running the same repair helper to seed the security index via the admin
+        # mTLS cert once opensearch is reachable. Both branches then fall through
+        # to the SAME shared full `up -d` (idempotent on the now-healthy
+        # opensearch container) which is what actually starts security-init and
+        # dashboards against a dependency condition that can now genuinely pass.
+        if [[ "$_os_started_before" != "absent" ]]; then
+          # Best-effort: a non-zero return here must NOT abort the script under
+          # set -e/ERR-trap — this call exists only to get a pre-existing
+          # container's healthcheck passing before `compose up -d` evaluates
+          # `depends_on: condition: service_healthy`. The unchanged post-up-d
+          # repair_security_credentials_if_needed (bare, fatal) is the
+          # authoritative pass/fail gate; if repair is still broken after
+          # this attempt, that later call reports and fails the run properly.
+          repair_security_credentials_if_needed || true
+          wait_healthy "suru.t3.datalake.opensearch" 120 || true
+        else
+          # Fresh bootstrap: stage 1 of 2 — bring up only opensearch (+ its own
+          # `service_completed_successfully` deps, e.g. config-init) so it has a
+          # running container to probe/repair against. Unlike Branch A above,
+          # there is no later fallback on this path if repair hard-fails here, so
+          # this call is bare (not `|| true`) — a real failure aborts via the
+          # existing ERR trap, matching the post-up-d block's fatal semantics.
+          log INFO "Fresh bootstrap detected — starting opensearch alone first to break the security-init healthcheck deadlock"
+          compose_cmd "$group" up -d --remove-orphans suru.t3.datalake.opensearch
+          repair_security_credentials_if_needed
+        fi
         ;;
     esac
 
+    # Stage 2 (fresh bootstrap) / only stage (existing container): shared full
+    # `up -d` for the whole group. Idempotent on the already-started opensearch
+    # container; this is what actually brings up security-init/dashboards, which
+    # by this point see a genuinely healthy opensearch and proceed normally.
     compose_cmd "$group" up -d --remove-orphans
     log OK "Started: ${group}"
 
     case "$group" in
       datalake/opensearch)
+        repair_security_credentials_if_needed
         wait_healthy "suru.t3.datalake.opensearch" 120
         # Re-apply index templates only when OpenSearch was recreated or created fresh.
-        local _os_started_after
-        _os_started_after=$(docker inspect --format '{{.State.StartedAt}}' \
-          suru.t3.datalake.opensearch 2>/dev/null || echo "new")
-        if [[ "$_os_started_before" != "$_os_started_after" ]]; then
+        if container_recreated "suru.t3.datalake.opensearch" "$_os_started_before"; then
           $DRY_RUN && log INFO "[DRY-RUN] Would apply index templates (OpenSearch recreated or new)" \
             || log INFO "OpenSearch recreated — applying index templates..."
-          run docker compose --env-file "$ENV_FILE" \
-            --file "${TIER3_DIR}/datalake/opensearch/compose.yaml" \
-            --profile init \
-            run --rm suru.t3.datalake.template-init
+          run_init "$group" "suru.t3.datalake.template-init" "init"
           $DRY_RUN && log INFO "[DRY-RUN] Would apply ISM retention policies" \
             || log INFO "Applying ISM retention policies..."
-          run docker compose --env-file "$ENV_FILE" \
-            --file "${TIER3_DIR}/datalake/opensearch/compose.yaml" \
-            --profile init \
-            run --rm suru.t3.datalake.ism-policy-init
+          run_init "$group" "suru.t3.datalake.ism-policy-init" "init"
         else
           log INFO "OpenSearch unchanged — skipping template-init and ism-policy-init"
         fi
@@ -554,19 +818,14 @@ cmd_start() {
         # Re-import dashboards only when the Dashboards container was recreated or created
         # fresh. Running the importer unconditionally on every start would silently
         # overwrite any customisations an operator made in the Dashboards UI.
-        local _dash_started_after
-        _dash_started_after=$(docker inspect --format '{{.State.StartedAt}}' \
-          suru.t3.datalake.dashboards 2>/dev/null || echo "new")
-        if [[ "$_dash_started_before" != "$_dash_started_after" ]]; then
+        if container_recreated "suru.t3.datalake.dashboards" "$_dash_started_before"; then
           $DRY_RUN && log INFO "[DRY-RUN] Would import dashboards (Dashboards container recreated or new)" \
             || log INFO "Dashboards container recreated — importing dashboards..."
-          run docker compose --env-file "$ENV_FILE" \
-            --file "${TIER3_DIR}/datalake/opensearch/compose.yaml" \
-            --profile init \
-            run --rm suru.t3.datalake.dashboard-importer
+          run_init "$group" "suru.t3.datalake.dashboard-importer" "init"
         else
           log INFO "Dashboards unchanged — skipping import (use 'reimport' to force)"
         fi
+        assert_dashboards_imported "$group"
         ;;
       ingestion/logstash)
         # Re-run volume-init for each active logstash profile before up
@@ -576,10 +835,7 @@ cmd_start() {
           local profile_name="${cname##*logstash-}"
           local init_svc="suru.t3.ingestion.volume-init-${profile_name}"
           log INFO "Ensuring volume ownership for ${cname} (uid 1000)..."
-          run docker compose --env-file "$ENV_FILE" \
-            --file "${TIER3_DIR}/ingestion/logstash/compose.yaml" \
-            --profile "${profile_name}" \
-            run --rm "${init_svc}"
+          run_init "$group" "$init_svc" "$profile_name"
           wait_healthy "${cname}" 120
         done
         ;;
@@ -647,7 +903,14 @@ cmd_destroy() {
   read -ra groups <<< "$(resolve_groups_reversed)"
   for group in "${groups[@]}"; do
     log INFO "Removing group: ${group}"
-    compose_cmd "$group" down --remove-orphans --timeout 30 --volumes=false
+    # --profile init: `down` only considers containers in its currently-active
+    # profile set, same as `up`. template-init/ism-policy-init/dashboard-importer
+    # (datalake/opensearch) are `profiles: [init]` one-shot containers — without
+    # this flag, `down` silently leaves them in place (Created/Exited, but never
+    # removed), which then blocks volume removal on a later destroy-all with
+    # "Resource is still in use". Harmless no-op for groups without an "init"
+    # profile (e.g. ingestion/logstash).
+    compose_cmd "$group" --profile init down --remove-orphans --timeout 30 --volumes=false
     log OK "Removed: ${group}"
   done
   if [[ -z "$TARGET_GROUP" ]]; then
@@ -678,7 +941,10 @@ cmd_destroy_all() {
   read -ra groups <<< "$(resolve_groups_reversed)"
   for group in "${groups[@]}"; do
     log INFO "Removing group with volumes: ${group}"
-    compose_cmd "$group" down --volumes --remove-orphans --timeout 30
+    # --profile init: see cmd_destroy for why this is required — without it,
+    # leftover profile-gated one-shot containers survive `down --volumes` and
+    # block the very volume removal this command exists to perform.
+    compose_cmd "$group" --profile init down --volumes --remove-orphans --timeout 30
     log OK "Removed: ${group}"
   done
   if [[ -z "$TARGET_GROUP" ]]; then
@@ -795,7 +1061,7 @@ cmd_check() {
   probe "Dashboards state green/yellow" \
     "docker exec suru.t3.datalake.dashboards curl -sk -u ${DASH_USER}:${DASH_PASS} https://localhost:5601/dashboards/api/status | grep -Eq '\"state\":\"(green|yellow)\"'"
   probe_warn "Dashboards saved objects imported" \
-    "docker exec suru.t3.datalake.dashboards curl -sk -u ${DASH_USER}:${DASH_PASS} 'https://localhost:5601/dashboards/api/saved_objects/_find?type=dashboard' | grep -q '\"total\"'"
+    "docker exec suru.t3.datalake.dashboards curl -sk -u ${DASH_USER}:${DASH_PASS} 'https://localhost:5601/dashboards/api/saved_objects/_find?type=dashboard&per_page=1' | jq -e '.total > 0' >/dev/null"
   probe_warn "index-pattern: suru-pfsense-* exists" \
     "docker exec suru.t3.datalake.dashboards curl -sk -u ${DASH_USER}:${DASH_PASS} 'https://localhost:5601/dashboards/api/saved_objects/index-pattern/suru-pfsense-index-pattern' | grep -q '\"type\":\"index-pattern\"'"
   probe_warn "index-pattern: suru-suricata-* exists" \
@@ -866,11 +1132,41 @@ cmd_logs() {
 cmd_reimport() {
   load_env
   log STEP "Re-importing OpenSearch Dashboards"
-  run docker compose --env-file "$ENV_FILE" \
-    --file "${TIER3_DIR}/datalake/opensearch/compose.yaml" \
-    --profile init \
-    run --rm suru.t3.datalake.dashboard-importer
+  run_init "datalake/opensearch" "suru.t3.datalake.dashboard-importer" "init"
   log OK "Dashboard reimport complete"
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# COMMAND: repair
+# ═════════════════════════════════════════════════════════════════════════════
+# Single-command operator recovery: re-sync the security index (bypassing the
+# service_healthy gate so password drift can be repaired even when OpenSearch
+# is reporting unhealthy for that exact reason), re-apply index templates and
+# ISM policies, then verify dashboards are actually imported (not just that
+# Dashboards itself is reachable).
+cmd_repair() {
+  log STEP "Tier 3 — Recovery: security re-sync, templates/policies, dashboards verification"
+  load_env
+
+  log INFO "Step 1/6 — Re-sync security index if admin credentials are missing or have drifted"
+  repair_security_credentials_if_needed "force"
+
+  log INFO "Step 2/6 — Re-apply OpenSearch index templates"
+  run_init "datalake/opensearch" "suru.t3.datalake.template-init" "init"
+
+  log INFO "Step 3/6 — Re-apply ISM retention policies"
+  run_init "datalake/opensearch" "suru.t3.datalake.ism-policy-init" "init"
+
+  log INFO "Step 4/6 — Wait for Dashboards to report healthy"
+  wait_healthy "suru.t3.datalake.dashboards" 180
+
+  log INFO "Step 5/6 — Re-run the dashboard importer"
+  run_init "datalake/opensearch" "suru.t3.datalake.dashboard-importer" "init"
+
+  log INFO "Step 6/6 — Verify dashboards are actually imported"
+  assert_dashboards_imported "datalake/opensearch"
+
+  log OK "Repair complete"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -936,6 +1232,7 @@ main() {
     check)       cmd_check ;;
     logs)        cmd_logs ;;
     reimport)    cmd_reimport ;;
+    repair)      check_deps; cmd_repair ;;
     destroy)     cmd_destroy ;;
     destroy-all) cmd_destroy_all ;;
     kernel-tune)     cmd_kernel_tune ;;
