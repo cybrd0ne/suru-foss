@@ -38,6 +38,35 @@ embeds a `type:index-pattern` object. All visualizations reference patterns via
 | `suru-pfblockerng-index-pattern` | `suru-pfblockerng-*` | pfBlockerNG blocks |
 | `suru-all-index-pattern` | `suru-*` | SIEM Overview (all sources) |
 
+## Field-List Cache Files (`.fields-*.json`)
+
+Each `.fields-suru-<pattern>-index-pattern.json` file is a pre-built field-list
+payload applied to its matching index pattern immediately after every
+`deploy.sh reimport`. OpenSearch Dashboards' saved-objects import API silently
+drops the `fields` attribute on existing index patterns, so without this step
+every reimport would leave index patterns with an empty or stale field list.
+
+**Rule:** never register a `type:"object"` parent-container entry (e.g. a bare
+`source`, `destination`, `network`, or `event` field registered as its own
+field-list item) and never register a bare compound-parent name as a
+non-container scalar (e.g. `source` typed as `string` when `source.ip`,
+`source.mac`, etc. are its real children). Either pattern causes the
+Discover-grid cell resolver in OpenSearch Dashboards to fail to drill into the
+real child leaf, rendering the cell blank — even though the underlying
+`_search` response carries the correct value. Terms-aggregation visualizations
+are unaffected, since they read doc_values directly rather than going through
+the per-cell Discover resolver; this class of bug only ever shows up in
+Discover's document grid.
+
+**Never use the "Refresh field list" button** in OpenSearch Dashboards on these
+index patterns. It re-derives the field list from `_field_caps`, which
+resurfaces object-type parent fields and reintroduces the bug. The canonical
+source of truth is the `.fields-*.json` files in this directory, applied via
+`bash tier3-core/scripts/deploy.sh reimport` — not the UI refresh action.
+
+See [`CONTRIBUTING.md`](../../../../CONTRIBUTING.md) for the full authoring and
+validation rules for these files.
+
 ## Adding a New Dashboard
 
 > **Follow the authoring rules below and in [`CONTRIBUTING.md`](../../../../CONTRIBUTING.md).**
