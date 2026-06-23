@@ -13,7 +13,18 @@
  * calls get_real_interface($iface) which only resolves pfSense logical names
  * (lan, wan, opt1 …). A physical trunk like igb1 is not a logical interface,
  * so get_real_interface() returns empty and node.cfg is never written —
- * leaving the default example config (interface=pppoe0) in place.
+ * leaving whatever was already on disk untouched.
+ *
+ * No boot-persistence mechanism needed (CONFIRMED by reading zeek.inc on
+ * the router, 2026-06-23): zeek_settings_resync() only writes node.cfg
+ * inside `if ($iface) { ... }` — when get_real_interface() returns empty
+ * for a physical trunk name, the write is skipped entirely. It never
+ * overwrites node.cfg with a broken default; it just leaves our last
+ * direct write alone. Two earlier fix attempts (system/shellcmd, then a
+ * cron/item polling every minute) were built on the wrong assumption that
+ * this needed reapplying after every boot/resync — both were removed.
+ * node.cfg, once correctly written by this applier, already survives every
+ * reboot for free, confirmed by two live reboot tests.
  *
  * Usage (run on router as root):
  *   sudo php /tmp/suru-staging/zeek-iface-apply.php igb1
@@ -22,6 +33,7 @@
 require_once('config.inc');
 require_once('config.lib.inc');
 require_once('/usr/local/pkg/zeek.inc');
+require_once('services.inc'); // configure_cron() — removing the superseded cron/item entry below
 
 define('ZEEK_NODE_CFG', '/usr/local/etc/node.cfg');
 
@@ -74,5 +86,26 @@ EOD;
 } else {
     echo "[zeek-iface-apply] node.cfg confirmed: interface={$iface}" . PHP_EOL;
 }
+
+// --- Cleanup: remove the now-unnecessary cron/item self-heal job and its
+// files from a previous version of this applier (2026-06-23). node.cfg is
+// already durable without it — see the file header. Safe no-op if absent.
+$zeek_dir     = '/usr/local/etc/zeek';
+$zeek_marker  = $zeek_dir . '/suru-active-interface';
+$zeek_boot_sh = $zeek_dir . '/suru-boot-apply.sh';
+
+$cron_items = config_get_path('cron/item', []);
+$cron_items_before = count($cron_items);
+$cron_items = array_values(array_filter($cron_items, function ($i) use ($zeek_boot_sh) {
+    return strpos((string)($i['command'] ?? ''), $zeek_boot_sh) === false;
+}));
+if (count($cron_items) !== $cron_items_before) {
+    config_set_path('cron/item', $cron_items);
+    write_config('SURU: removed superseded Zeek interface self-heal cron job');
+    configure_cron();
+    echo "[zeek-iface-apply] Removed superseded cron/item entry for {$zeek_boot_sh}." . PHP_EOL;
+}
+@unlink($zeek_boot_sh);
+@unlink($zeek_marker);
 
 echo "[zeek-iface-apply] Done. Caller must run 'zeekctl deploy' to activate." . PHP_EOL;

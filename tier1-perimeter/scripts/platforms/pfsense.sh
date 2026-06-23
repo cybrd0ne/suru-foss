@@ -738,7 +738,13 @@ EOPHP
     if [[ -n "${MAXMIND_ACCOUNT_ID:-}" || -n "${MAXMIND_LICENSE_KEY:-}" || -n "${IPINFO_TOKEN:-}" ]]; then
       local _pfb_secrets_local
       _pfb_secrets_local="$(mktemp)"
-      chmod 600 -- "${_pfb_secrets_local}"
+      # No `--` here: BSD chmod (both the macOS dev workstation and the
+      # FreeBSD-based router) does not support the GNU `--` end-of-options
+      # marker — it errors "chmod: --: No such file or directory". Safe
+      # without it: _pfb_secrets_local is always a mktemp-generated path,
+      # never user input, so there's no leading-`-` injection risk to guard
+      # against.
+      chmod 600 "${_pfb_secrets_local}"
       # GeoIP needs both MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY (the applier
       # only enables GeoIP when both are present); ASN needs IPINFO_TOKEN.
       {

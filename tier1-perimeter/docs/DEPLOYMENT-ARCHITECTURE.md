@@ -371,6 +371,80 @@ remote side as soon as the encrypt/decrypt step returns.
 | `_pf_deploy_zeek` | Push Zeek site policy, SOHO telemetry module, and zeekctl.cfg; `mkdir -p /var/log/zeek` |
 | `_pf_reload_services` | `pfSsh.php playback svc` for syslog-ng + zeek; `suricatasc -c reload-rules` for live rule hot-reload |
 
+### Boot Persistence (syslog-ng, Zeek interface)
+
+Two of the pfSense appliers in `tier1-perimeter/pfsense/` deliberately bypass
+pfSense's native XML-driven config builder, because that builder cannot
+express what we need:
+
+- `syslog-ng-apply.php` — pfSense's syslog-ng XML schema can't express
+  syslog-ng 4.x features (`disk-buffer`, `ca-dir`, `sni`) the SURU template
+  relies on. The applier calls `syslogng_resync()` only for its side effects,
+  then overwrites `/usr/local/etc/syslog-ng.conf` directly with the full
+  rendered template and starts the daemon directly.
+- `zeek-iface-apply.php` — `zeek_settings_resync()`'s `get_real_interface()`
+  can only resolve pfSense *logical* interface names (`lan`, `opt1`, …); a
+  physical trunk like `igb1` (this deployment's capture interface) has no
+  logical alias, so the native resync silently fails to write `node.cfg`.
+  The applier detects this and writes `node.cfg` directly.
+
+Both bypasses only fix the **current boot**: pfSense's own boot sequence
+re-runs its native config builders, which would silently revert both fixes
+on every reboot until an operator re-ran `make deploy` by hand — this is
+exactly what caused an ingestion outage on 2026-06-22 (syslog-ng came up
+with a broken, native-schema-generated config after a router reboot).
+
+**First attempt — `system/shellcmd` — DISPROVEN by a live reboot test
+(2026-06-23).** Netgate's boot-commands documentation
+(https://docs.netgate.com/pfsense/en/latest/development/boot-commands.html)
+says `shellcmd` runs "late in boot," and a `system/shellcmd` entry was
+registered on that basis. Reading the actual pfSense source on the router
+disproved this: `/etc/rc.bootup` calls `system_do_shell_commands()`
+(`shellcmd`) at line ~415, then `register_all_installed_packages()` —
+which re-triggers `syslogng_resync()` and Zeek's settings resync — at line
+~481, **after** shellcmd. So the shellcmd-applied fix always lost the race.
+The first reboot test didn't visibly fail only because the underlying XML
+object set happened to already be self-consistent (this deploy's own
+`write_config()` calls had incidentally cleaned up the dangling reference
+from the original incident) — confirmed via file evidence: post-reboot
+`syslog-ng.conf` had a different mtime/size than `suru-rendered.conf`
+(natively regenerated, not our copy) and zero `suru-boot-apply` entries in
+`system.log` despite the shellcmd being registered.
+
+**Actual fix — pfSense `cron/item`** (core `configure_cron()` in
+`/etc/inc/services.inc`, not the optional Cron package): both appliers now:
+1. Persist their validated output to a durable path (survives reboot, unlike
+   `/tmp/suru-staging`): `/usr/local/etc/syslog-ng/suru-rendered.conf` and
+   `/usr/local/etc/zeek/suru-active-interface` respectively.
+2. Write a small, idempotent, no-op-safe re-apply shell script next to it
+   (`suru-boot-apply.sh` in each directory) — idempotency (a `cmp`/`grep`
+   check before touching anything) is mandatory here, not optional: the job
+   runs every minute, and without the check syslog-ng would restart every
+   single minute.
+3. Register that script as a `cron/item` entry (`* * * * *`, i.e. every
+   minute) in `config.xml`, deduplicated by command path on every run.
+
+`cron(8)` only starts once `/etc/rc.bootup` fully completes — confirmed on
+the router: the `cron` process start time matches boot time, after
+`register_all_installed_packages()` — so it reliably has the last word. As
+a recurring job it also self-heals any *future* drift (an operator GUI
+save in Status > syslog-ng, for example), not just the boot-time case,
+which `shellcmd` (a one-shot) never could have covered either.
+
+**Confirmed durable by a second live reboot test (2026-06-23):**
+post-reboot, `/usr/local/etc/syslog-ng.conf`'s mtime landed exactly on the
+next cron minute-tick boundary and was byte-identical to
+`suru-rendered.conf`; `node.cfg` showed `interface=igb1`; Tier 3's frontdoor
+logged a new syslog TLS session within 3 minutes of the router coming back
+up. The stale `system/shellcmd` entries from the first attempt were removed
+from both appliers and from the live router's `config.xml`.
+
+The other three appliers (`suricata-rules-apply.php`,
+`zeek-scripts-apply.php`, `pfblockerng-globals-apply.php`) write
+exclusively through `config_set_path()`/`write_config()` and their package's
+native resync function — fully native, durable across reboots, no
+cron/shellcmd needed.
+
 ---
 
 ## 9. OPNsense Driver Status

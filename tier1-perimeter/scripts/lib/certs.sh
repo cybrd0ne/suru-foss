@@ -45,7 +45,6 @@ certs_generate_client() {
   local ca_srl="${REPO_ROOT}/tier4-operations/pki/certs/root-ca.srl"
   local client_key="${cert_dir}/${name}-key.pem"
   local client_csr="${cert_dir}/${name}.csr"
-  trap 'rm -f "${client_csr}"' RETURN
   local client_cert="${cert_dir}/${name}.pem"
   local subj="/C=RO/O=SURU Platform/OU=Tier1/CN=suru-${name}"
 
@@ -84,5 +83,12 @@ certs_generate_client() {
   fi
 
   run chmod 600 "$client_key"
+  # CSR is single-use once signed — clean it up explicitly rather than via a
+  # `trap ... RETURN` (a prior version of this function used one: it fires on
+  # every SUBSEQUENT function return in the whole script, not just this one,
+  # so once this function's own early-return path fired it once, it kept
+  # firing on unrelated later function returns where client_csr was long out
+  # of scope, throwing "client_csr: unbound variable" under set -u).
+  run rm -f "$client_csr"
   log_info "Client cert generated: ${client_cert}"
 }
