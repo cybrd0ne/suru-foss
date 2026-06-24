@@ -33,22 +33,23 @@ aliases:
   # Hourly-updated feeds tracking malware C2 endpoints. High signal, low noise.
   # Block in BOTH directions: prevents both inbound C2 callbacks from
   # compromised hosts and inbound scans from known-bad infra.
+  #
+  # Removed 2026-06-23 (live-verified from the router, see SKILL §10/feeds):
+  #   - SURU_SSLBL: abuse.ch deprecated SSLBL on 2025-01-03 — the feed URL
+  #     now returns only a deprecation notice, zero IPs.
+  #   - SURU_TalosBL: talosintelligence.com/documents/ip-blacklist returns
+  #     HTTP 403 to every automated fetch (Cloudflare bot-protection), with
+  #     or without a browser User-Agent — confirmed never present in
+  #     /var/db/pfblockerng/deny/ on the live router. Not fetchable by an
+  #     unattended cron job; dropped rather than left silently empty forever.
   # ---------------------------------------------------------------------------
   - aliasname: SURU_IP_C2
-    description: "SURU Tier 1 — Active C2 infrastructure (FeodoTracker, SSLBL, Talos, ET compromised)"
+    description: "SURU Tier 1 — Active C2 infrastructure (FeodoTracker, ET compromised)"
     action: Deny_Both
     cron: EveryDay
     feeds:
       - header: SURU_FeodoTracker
         url: https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt
-        format: auto
-        state: Enabled
-      - header: SURU_SSLBL
-        url: https://sslbl.abuse.ch/blacklist/sslipblacklist.txt
-        format: auto
-        state: Enabled
-      - header: SURU_TalosBL
-        url: https://talosintelligence.com/documents/ip-blacklist
         format: auto
         state: Enabled
       - header: SURU_ETCompromised
@@ -59,20 +60,22 @@ aliases:
   # ---------------------------------------------------------------------------
   # SURU_IP_REP — General reputation / known-malicious networks
   # MITRE ATT&CK: TA0001 (Initial Access), TA0040 (Impact)
-  # Spamhaus DROP/EDROP catches hijacked netblocks and bulletproof hosting.
+  # Spamhaus DROP catches hijacked netblocks and bulletproof hosting.
   # CINS Army & ET Block IPs aggregate scanner + abuse community feedback.
+  # AlienVault OTX + BlockList.de add community-sourced reputation coverage
+  # (syncbricks.com pfBlockerNG recommended-feeds, IPv4 Priority 2).
+  #
+  # Removed 2026-06-23: SURU_SpamhausEdrop — Spamhaus merged EDROP into DROP;
+  # the URL now returns a "merged into drop.txt" notice with zero entries.
+  # DROP (SURU_SpamhausDrop, below) already carries the merged content.
   # ---------------------------------------------------------------------------
   - aliasname: SURU_IP_REP
-    description: "SURU Tier 1 — IP reputation (Spamhaus DROP+EDROP, CINS, ET Block)"
+    description: "SURU Tier 1 — IP reputation (Spamhaus DROP, CINS, ET Block, AlienVault, BlockList.de)"
     action: Deny_Both
     cron: EveryDay
     feeds:
       - header: SURU_SpamhausDrop
         url: https://www.spamhaus.org/drop/drop_v4.json
-        format: auto
-        state: Enabled
-      - header: SURU_SpamhausEdrop
-        url: https://www.spamhaus.org/drop/edrop.txt
         format: auto
         state: Enabled
       - header: SURU_CINS
@@ -81,6 +84,14 @@ aliases:
         state: Enabled
       - header: SURU_ETBlock
         url: https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt
+        format: auto
+        state: Enabled
+      - header: SURU_AlienVault
+        url: https://reputation.alienvault.com/reputation.data
+        format: auto
+        state: Enabled
+      - header: SURU_BlockListDE
+        url: https://lists.blocklist.de/lists/all.txt
         format: auto
         state: Enabled
 

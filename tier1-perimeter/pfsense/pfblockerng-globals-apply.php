@@ -34,6 +34,17 @@
  * Idempotent: re-running with identical baseline produces no diff in
  * /conf/config.xml. Re-run after an operator GUI save merges back the
  * SURU-claimed keys and leaves the rest alone.
+ *
+ * Applies live: on every run (unconditionally — see comment at the call
+ * site), calls sync_package_pfblockerng('updatednsbl') — pfBlockerNG's own
+ * reconfigure entrypoint (patches /var/unbound/unbound.conf, rebuilds the
+ * DNSBL blacklist file pfb_unbound.py actually reads at query time, reloads
+ * affected services). Without this, a setting like dnsbl_mode lands in
+ * config.xml but is never actually applied — neither the package's cron
+ * path nor a plain write_config() trigger it; only a GUI "Save" or this
+ * explicit call does. Mode matters too: 'noupdates' switches the module on
+ * but skips rebuilding the blacklist file the module reads, leaving
+ * enforcement silently inert — see the call site's comment.
  */
 
 require_once('config.inc');
@@ -44,6 +55,7 @@ if (!file_exists('/usr/local/pkg/pfblockerng/pfblockerng.inc')) {
   fwrite(STDERR, "[pfblockerng-globals-apply] pfBlockerNG package not installed; aborting.\n");
   exit(2);
 }
+require_once('/usr/local/pkg/pfblockerng/pfblockerng.inc');
 
 // -- SURU baseline -------------------------------------------------------
 // installedpackages/pfblockerng/config/0
@@ -60,7 +72,17 @@ $baseline_master = [
 // pfb_pytlds_* — these are site-local networking choices.
 $baseline_dnsbl = [
   'pfb_dnsbl'    => 'on',                // DNSBL feature enabled
-  'dnsbl_mode'   => 'dnsbl_unbound',     // integrated unbound responder
+  // pfBlockerNG's $pfb['dnsbl_py_blacklist'] (the actual enforcement switch
+  // — pfblockerng.inc) is only TRUE when dnsbl_mode=='dnsbl_python' AND
+  // pfb_py_block=='on' together. dnsbl_mode has exactly two valid values:
+  // 'dnsbl_unbound' (heavy, zone-file-based "Unbound mode") and
+  // 'dnsbl_python' (lightweight "Unbound python mode" — what pfb_py_block
+  // actually pairs with). Live-confirmed 2026-06-23: with the former value
+  // and pfb_py_block=on, feeds downloaded/compiled correctly but DNS
+  // queries for known-blocked domains still resolved to their real IP —
+  // dnsbl_py_blacklist stayed FALSE the whole time, so the resolver never
+  // applied any of it.
+  'dnsbl_mode'   => 'dnsbl_python',      // SOHO-recommended Python blacklist mode
   'pfb_py_block' => 'on',                // Python mode (SOHO-recommended)
   'pfb_cache'    => 'on',                // DNS cache
   'action'       => 'Deny_Outbound',     // block outbound DNS to blocked domains
@@ -131,42 +153,88 @@ $ch_ip     = empty($baseline_ip) ? []
 $total_changes = count($ch_master) + count($ch_dnsbl) + count($ch_ip);
 if ($total_changes === 0) {
   echo "[pfblockerng-globals-apply] No changes — baseline already matches /conf/config.xml." . PHP_EOL;
-  exit(0);
+} else {
+  write_config('SURU: applied pfBlockerNG global baseline');
+
+  // Read-back assertion: verify the values actually landed in config.xml at
+  // the paths pfBlockerNG reads. Mismatch indicates a config_set_path error.
+  $verify_master = config_get_path('installedpackages/pfblockerng/config/0', []);
+  $verify_dnsbl  = config_get_path('installedpackages/pfblockerngdnsblsettings/config/0', []);
+  $verify_ok     = true;
+  foreach ($baseline_master as $k => $v) {
+      if (!isset($verify_master[$k]) || (string)$verify_master[$k] !== (string)$v) {
+          fwrite(STDERR, "[pfblockerng-globals-apply] WARN: key '{$k}' readback mismatch (master)\n");
+          $verify_ok = false;
+      }
+  }
+  foreach ($baseline_dnsbl as $k => $v) {
+      if (!isset($verify_dnsbl[$k]) || (string)$verify_dnsbl[$k] !== (string)$v) {
+          fwrite(STDERR, "[pfblockerng-globals-apply] WARN: key '{$k}' readback mismatch (dnsbl)\n");
+          $verify_ok = false;
+      }
+  }
+  if (!empty($baseline_ip)) {
+      $verify_ip = config_get_path('installedpackages/pfblockerngipsettings/config/0', []);
+      foreach ($baseline_ip as $k => $v) {
+          if (!isset($verify_ip[$k]) || (string)$verify_ip[$k] !== (string)$v) {
+              fwrite(STDERR, "[pfblockerng-globals-apply] WARN: key '{$k}' readback mismatch (ipsettings)\n");
+              $verify_ok = false;
+          }
+      }
+  }
+  if (!$verify_ok) {
+      fwrite(STDERR, "[pfblockerng-globals-apply] ERROR: read-back assertion failed — config may not have been applied\n");
+      exit(7);
+  }
+  echo "[pfblockerng-globals-apply] Read-back assertion passed." . PHP_EOL;
 }
 
-write_config('SURU: applied pfBlockerNG global baseline');
-
-// Read-back assertion: verify the values actually landed in config.xml at the
-// paths pfBlockerNG reads. Mismatch indicates a config_set_path path error.
-$verify_master = config_get_path('installedpackages/pfblockerng/config/0', []);
-$verify_dnsbl  = config_get_path('installedpackages/pfblockerngdnsblsettings/config/0', []);
-$verify_ok     = true;
-foreach ($baseline_master as $k => $v) {
-    if (!isset($verify_master[$k]) || (string)$verify_master[$k] !== (string)$v) {
-        fwrite(STDERR, "[pfblockerng-globals-apply] WARN: key '{$k}' readback mismatch (master)\n");
-        $verify_ok = false;
-    }
-}
-foreach ($baseline_dnsbl as $k => $v) {
-    if (!isset($verify_dnsbl[$k]) || (string)$verify_dnsbl[$k] !== (string)$v) {
-        fwrite(STDERR, "[pfblockerng-globals-apply] WARN: key '{$k}' readback mismatch (dnsbl)\n");
-        $verify_ok = false;
-    }
-}
-if (!empty($baseline_ip)) {
-    $verify_ip = config_get_path('installedpackages/pfblockerngipsettings/config/0', []);
-    foreach ($baseline_ip as $k => $v) {
-        if (!isset($verify_ip[$k]) || (string)$verify_ip[$k] !== (string)$v) {
-            fwrite(STDERR, "[pfblockerng-globals-apply] WARN: key '{$k}' readback mismatch (ipsettings)\n");
-            $verify_ok = false;
-        }
-    }
-}
-if (!$verify_ok) {
-    fwrite(STDERR, "[pfblockerng-globals-apply] ERROR: read-back assertion failed — config may not have been applied\n");
-    exit(7);
-}
-echo "[pfblockerng-globals-apply] Read-back assertion passed." . PHP_EOL;
+// write_config() alone only edits config.xml — it does NOT reconfigure
+// anything live. pfBlockerNG's actual reconfigure entrypoint is
+// sync_package_pfblockerng(), which patches /var/unbound/unbound.conf's
+// module-config (adds/removes the python module), rebuilds the master
+// DNSBL blacklist file pfb_unbound.py reads at query time, and reloads the
+// affected services. The package's own cron path
+// (pfblockerng.php's pfblockerng_sync_cron(), invoked by `make` or a GUI
+// "Force Update") only downloads/compiles individual feeds — it does NOT
+// call sync_package_pfblockerng() and so NEVER picks up a setting change
+// like dnsbl_mode on its own. Only a GUI "Save" on the DNSBL settings page
+// calls it. Live-confirmed 2026-06-24: after fixing dnsbl_mode to
+// 'dnsbl_python' and force-running the cron downloader, every feed
+// downloaded/compiled correctly but DNS queries for known-blocked domains
+// still returned their real IP — /var/unbound/unbound.conf's module-config
+// still read 'validator iterator' (no python module) because nothing had
+// ever called sync_package_pfblockerng() for this router.
+//
+// MUST run unconditionally, NOT only inside the $total_changes>0 branch
+// above: this script is meant to be re-run on every deploy (idempotent),
+// and on a router where config.xml already matches the baseline (e.g. a
+// repeat deploy with no setting changes), $total_changes is 0 and nothing
+// after an early-exit would ever run. Live-confirmed 2026-06-24: that is
+// exactly what happened on the deploy immediately after the dnsbl_mode fix
+// above shipped — dnsbl_mode was already correct from the prior run, this
+// run wrote nothing, the old `exit(0)` skipped straight past the resync
+// call, and module-config stayed 'validator iterator' through a second
+// full deploy cycle.
+//
+// Mode matters: 'noupdates' sets $pfb['save']=TRUE, and the master DNSBL
+// blacklist build (the file pfb_unbound.py actually reads at query time —
+// /var/unbound/pfb_py_data.txt / pfb_py_zone.txt) is gated on !$pfb['save']
+// in several places (e.g. pfblockerng.inc line ~3448). Live-confirmed
+// 2026-06-24: with 'noupdates', module-config correctly switched to
+// "python validator iterator" and unbound restarted, but
+// pfb_py_data.txt/pfb_py_zone.txt were never created — DNSBL enforcement
+// stayed silently inert because the python module had nothing to check
+// queries against, despite being correctly loaded.
+// 'updatednsbl' sets reuse_dnsbl='on' (reuse already-downloaded feed
+// content, no re-fetch) and updatednsbl=TRUE, which DOES run the master
+// DNSBL rebuild — this is pfBlockerNG's own intended mode for "settings
+// changed, rebuild the DNSBL output from what's already downloaded."
+// May briefly interrupt name resolution while unbound reloads
+// (pfBlockerNG's own documented behavior, not specific to this script).
+echo "[pfblockerng-globals-apply] Running sync_package_pfblockerng('updatednsbl') to apply settings + rebuild DNSBL output live..." . PHP_EOL;
+sync_package_pfblockerng('updatednsbl');
+echo "[pfblockerng-globals-apply] sync_package_pfblockerng() complete." . PHP_EOL;
 
 echo "[pfblockerng-globals-apply] installedpackages/pfblockerng/config/0:" . PHP_EOL;
 if (count($ch_master) === 0) {
@@ -206,6 +274,5 @@ if (!empty($baseline_ip)) {
   }
 }
 
-echo "[pfblockerng-globals-apply] {$total_changes} setting(s) updated." . PHP_EOL;
-echo "[pfblockerng-globals-apply] Note: pfBlockerNG applies these on its next cron run, or via GUI 'Force Update'." . PHP_EOL;
+echo "[pfblockerng-globals-apply] {$total_changes} setting(s) updated; sync_package_pfblockerng() applied live regardless." . PHP_EOL;
 echo "[pfblockerng-globals-apply] Done." . PHP_EOL;

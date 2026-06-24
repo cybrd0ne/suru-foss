@@ -1,6 +1,6 @@
 # =============================================================================
 # SURU Platform — syslog-ng pfSense Comprehensive Security Log Forwarder
-# Version: 2.7.0
+# Version: 2.8.0
 # Target pfSense: 2.7.x / 2.8.x / 24.x (FreeBSD 14, syslog-ng 4.6)
 # Install path: /usr/local/etc/syslog-ng.conf
 #
@@ -21,7 +21,10 @@
 #   DHCP (Zeek)   /var/log/zeek/dhcp.log                  network-observed leases — AUTHORITATIVE DHCP source
 #   DHCP (legacy) /var/log/dhcpd.log                      ISC dhcpd direct log — DEAD on Kea-based pfSense (kept for ISC installs)
 #   Firewall/auth /var/run/log, /var/run/logpriv          pfSense syslog unix sockets
-#   pfBlockerNG   /var/log/pfblockerng/{dnsbl,pfblockerng}.log
+#   pfBlockerNG   /var/log/pfblockerng/{dnsbl,ip_block}.log — NOT pfblockerng.log
+#                 (that file is pfBlockerNG's status/admin log — "Saving
+#                 configuration", "Restarting firewall filter daemon" — never
+#                 block events; confirmed live on-router 2026-06-23)
 #   VPN           /var/log/{openvpn,ipsec}.log
 #
 # TLS cert paths (written by deploy script):
@@ -155,8 +158,14 @@ source s_zeek_dhcp   { file("/var/log/zeek/dhcp.log"   follow-freq(1) flags(no-p
 # so Logstash can extract the precise RFC 5424 timestamp.
 source s_filter_log { file("/var/log/filter.log" follow-freq(1) flags(no-parse) program-override("filterlog")); };
 
-source s_pfblocker_dnsbl { file("/var/log/pfblockerng/dnsbl.log"       follow-freq(1) flags(no-parse) program-override("pfblockerng-dnsbl")); };
-source s_pfblocker_ip    { file("/var/log/pfblockerng/pfblockerng.log" follow-freq(1) flags(no-parse) program-override("pfblockerng-ip")  ); };
+# pfBlockerNG writes per-event CSV lines (not the legacy pipe-delimited
+# format) to dnsbl.log (DNS blocks) and ip_block.log (firewall IP blocks).
+# pfblockerng.log is NOT a block-event log — it only carries status/admin
+# messages ("Saving configuration", daemon restarts) and was wrongly tailed
+# here in earlier versions of this template; ip_block.log is root-owned
+# 0600 but syslog-ng runs as root on pfSense so the file() source reads it.
+source s_pfblocker_dnsbl { file("/var/log/pfblockerng/dnsbl.log"    follow-freq(1) flags(no-parse) program-override("pfblockerng-dnsbl")); };
+source s_pfblocker_ip    { file("/var/log/pfblockerng/ip_block.log" follow-freq(1) flags(no-parse) program-override("pfblockerng-ip")  ); };
 source s_openvpn         { file("/var/log/openvpn.log"                 follow-freq(1) flags(no-parse) program-override("openvpn")          ); };
 source s_ipsec           { file("/var/log/ipsec.log"                   follow-freq(1) flags(no-parse) program-override("ipsec")            ); };
 

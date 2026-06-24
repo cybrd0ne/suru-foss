@@ -44,7 +44,13 @@ tier1-perimeter/
 │   ├── DEPLOYMENT-ARCHITECTURE.md  # This file
 │   └── DEPLOYMENT-NOTES.md         # Quick-start operator and AI guide
 ├── pfsense/
-│   └── syslog-ng-pfsense.conf.tpl  # syslog-ng legacy reference template (tokens: @@FRONTDOOR_SYSLOG_SNI@@, @@FRONTDOOR_PORT@@; authoritative template: templates/pfsense/syslog-ng.conf.tpl)
+│   ├── syslog-ng-apply.php          # Parses rendered syslog-ng.conf into pfSense XML objects
+│   ├── pfblockerng-globals-apply.php # pfBlockerNG global settings + live resync (sync_package_pfblockerng)
+│   ├── zeek-iface-apply.php         # Sets Zeek capture interface in config.xml + node.cfg
+│   ├── zeek-scripts-apply.php       # Registers tier2 Zeek scripts in pfSense XML
+│   ├── suricata-rules-apply.php     # Suricata rule enable/disable applier
+│   ├── backup-encrypt.php / backup-restore.php # Pre-deploy config.xml backup
+│   └── config-template.xml          # Base config.xml patch template
 ├── suricata/
 │   ├── suricata.yaml
 │   ├── update.yaml
