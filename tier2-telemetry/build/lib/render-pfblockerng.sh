@@ -124,7 +124,13 @@ _generate_php_importer() {
       state="$(     _yaml_get_feed_field "${yml}" ${i} state     || true )"
     fi
     [[ -z "${aliasname}" ]] && aliasname="FEED_${i}"
-    [[ -z "${action}" ]]    && action="Deny Both"
+    # DNSBL alias action MUST be "unbound" — pfBlockerNG's cron list-builder
+    # (pfblockerng.inc) only queues an alias for DNSBL download/compile when
+    # action=='unbound'; any other value (e.g. an IP-alias-style "Deny Both")
+    # silently routes it into the IP-deny build path instead, where domain
+    # content never downloads. See dnsbl-categories.yml header for the
+    # live-router evidence behind this rule.
+    [[ -z "${action}" ]]    && action="unbound"
     [[ -z "${format}" ]]    && format="Domain"
     [[ -z "${state}" ]]     && state="Enabled"
     # Escape every field for safe embedding in PHP single-quoted strings (see _php_esc).
@@ -138,12 +144,25 @@ _generate_php_importer() {
     i=$(( i + 1 ))
   done
 
-  # Merge-by-aliasname: preserves existing non-SURU entries
+  # Merge-by-aliasname: preserves existing non-SURU entries, and prunes any
+  # SURU_-prefixed entry that is no longer in this YAML — without this, a
+  # feed removed from dnsbl-categories.yml (e.g. a dead/deprecated URL)
+  # lingers in pfSense's config.xml forever with whatever stale action/url
+  # it last had, since the original merge only ever added/overwrote keys
+  # and never deleted any. Live-confirmed 2026-06-23: SURU_ET_DNSBL and
+  # SURU_PhishTank, both removed from dnsbl-categories.yml in the same PR
+  # that fixed the action='unbound' bug, were still present post-deploy
+  # with their old broken action="Deny Both".
   printf '%s\n' \
     'global $config;' \
     '$dnsbl_existing = config_get_path("installedpackages/pfblockerngdnsbl/config", []);' \
+    '$dnsbl_desired = array_map(function ($f) { return $f["aliasname"]; }, $dnsbl_feeds);' \
     '$dnsbl_by_alias = [];' \
-    'foreach ($dnsbl_existing as $e) { $dnsbl_by_alias[$e["aliasname"]] = $e; }' \
+    'foreach ($dnsbl_existing as $e) {' \
+    '  $is_suru = (strpos($e["aliasname"], "SURU_") === 0);' \
+    '  if ($is_suru && !in_array($e["aliasname"], $dnsbl_desired, true)) { continue; }' \
+    '  $dnsbl_by_alias[$e["aliasname"]] = $e;' \
+    '}' \
     'foreach ($dnsbl_feeds as $f)    { $dnsbl_by_alias[$f["aliasname"]] = $f; }' \
     'config_set_path("installedpackages/pfblockerngdnsbl/config", array_values($dnsbl_by_alias));' \
     'write_config("SURU: imported pfBlockerNG DNSBL feeds");' \
@@ -234,11 +253,18 @@ _generate_php_importer_ip() {
     i=$(( i + 1 ))
   done
 
-  # Merge-by-aliasname into pfblockernglistsv4 and write_config.
+  # Merge-by-aliasname: same stale-SURU_-entry pruning as the DNSBL importer
+  # above (see its comment) — without this, a removed alias like
+  # SURU_SSLBL or SURU_TalosBL lingers in config.xml forever.
   printf '%s\n' \
     '$ipv4_existing = config_get_path("installedpackages/pfblockernglistsv4/config", []);' \
+    '$ipv4_desired = array_map(function ($a) { return $a["aliasname"]; }, $ipv4_aliases);' \
     '$ipv4_by_alias = [];' \
-    'foreach ($ipv4_existing as $e) { $ipv4_by_alias[$e["aliasname"]] = $e; }' \
+    'foreach ($ipv4_existing as $e) {' \
+    '  $is_suru = (strpos($e["aliasname"], "SURU_") === 0);' \
+    '  if ($is_suru && !in_array($e["aliasname"], $ipv4_desired, true)) { continue; }' \
+    '  $ipv4_by_alias[$e["aliasname"]] = $e;' \
+    '}' \
     'foreach ($ipv4_aliases as $a)  { $ipv4_by_alias[$a["aliasname"]] = $a; }' \
     'config_set_path("installedpackages/pfblockernglistsv4/config", array_values($ipv4_by_alias));' \
     'write_config("SURU: imported pfBlockerNG IPv4 aliases");' \

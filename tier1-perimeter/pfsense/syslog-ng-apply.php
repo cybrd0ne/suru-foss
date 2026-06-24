@@ -39,7 +39,10 @@
  * removes every object whose objectname is in the rendered file's
  * declared name set, then re-adds the fresh definitions. Any user-managed
  * objects are preserved, UNLESS they fail the referential-integrity check
- * below (see suru_drop_dangling_objects()).
+ * below (see suru_drop_dangling_objects()), or match the SURU-synthetic
+ * naming pattern for nameless log/options blocks (see SURU_SYNTHETIC_NAME_RE
+ * — these are our own past leftovers, never an operator's object, and are
+ * pruned rather than preserved).
  *
  * Usage (run on router as root):
  *   sudo php /tmp/suru-staging/syslog-ng-apply.php /tmp/suru-staging/syslog-ng.conf-source
@@ -82,16 +85,33 @@ function suru_parse_syslogng_conf(string $src): array {
   if (!preg_match_all($re, $src, $m, PREG_SET_ORDER)) {
     return $objects;
   }
+  // options/log blocks are nameless in syslog-ng grammar. The pfSense build
+  // function ignores objectname for these. A synthetic name is needed so
+  // the merge-by-name logic can deduplicate across reapplies — but it MUST
+  // be stable independent of body content. An earlier version hashed the
+  // body (sha1) to derive the name; that meant ANY edit to a log/options
+  // block's literal text (reordering a rewrite, fixing a file path, even
+  // re-wrapping a comment) changed its hash, so the merge logic in the
+  // caller (which only replaces an existing object whose name matches one
+  // we're about to (re)write) never recognized the edited block as "the
+  // same one, updated" — it just added a new name and left the old one
+  // behind as if it were a genuine operator object. Live-confirmed
+  // 2026-06-24: this router had accumulated 2-3 duplicate copies of nearly
+  // every log{} block (firewall, dns, zeek, vpn, suricata, auth, dhcp,
+  // pfblocker) across the template's edit history, double/triple-shipping
+  // every event type to the SIEM. Fixed: name by sequential position
+  // instead of content hash — stable across content edits to any
+  // individual block, since the template always emits the same ordered
+  // sequence of log/options blocks. The caller's pruning step (below) also
+  // sweeps any leftover hash-named or now-unused ordinal-named SURU object
+  // to self-heal the cruft already on a router from before this fix.
+  $ordinal = ['log' => 0, 'options' => 0];
   foreach ($m as $match) {
     $type = $match[1];
     $name = isset($match[2]) ? trim($match[2]) : '';
     $body = '{' . $match[3] . '}';
-    // options/log blocks are nameless in syslog-ng grammar. The pfSense
-    // build function ignores objectname for these. Use a synthetic stable
-    // name so the merge-by-name logic still deduplicates across reapplies.
     if ($name === '' && ($type === 'log' || $type === 'options')) {
-      // hash the body to get a stable identifier across deploys with same content
-      $name = $type . '_suru_' . substr(sha1($body), 0, 8);
+      $name = $type . '_suru_' . sprintf('%03d', $ordinal[$type]++);
     }
     $objects[] = [
       'objecttype'       => $type,
@@ -101,6 +121,12 @@ function suru_parse_syslogng_conf(string $src): array {
   }
   return $objects;
 }
+
+// Matches both this fix's ordinal-named synthetic objects (log_suru_000,
+// options_suru_003, …) and the prior version's sha1-hash-named ones
+// (log_suru_a1b2c3d4) — anything matching this pattern is SURU-owned, never
+// an operator's own object, regardless of which naming scheme produced it.
+const SURU_SYNTHETIC_NAME_RE = '/^(log|options)_suru_[0-9a-f]+$/';
 
 // Object types that can be the TARGET of a reference (source(NAME),
 // destination(NAME), filter(NAME), rewrite(NAME), parser(NAME),
@@ -210,9 +236,28 @@ foreach ($parsed as $o) { $suru_names[$o['objectname']] = true; }
 
 $existing = config_get_path('installedpackages/syslogngadvanced/config', []);
 $kept = [];
+$dropped_synthetic = [];
 foreach ($existing as $o) {
   $name = isset($o['objectname']) ? $o['objectname'] : '';
-  if (!isset($suru_names[$name])) { $kept[] = $o; }
+  if (isset($suru_names[$name])) { continue; }
+  // A SURU-synthetic name (this run's or an earlier run's naming scheme —
+  // see SURU_SYNTHETIC_NAME_RE) that ISN'T in this run's desired set is our
+  // own leftover, never an operator's object — prune it instead of
+  // preserving it. This is what self-heals the duplicate log{} blocks
+  // already accumulated on a router from before this fix (see the comment
+  // in suru_parse_syslogng_conf()), and stops future template edits from
+  // accumulating new ones.
+  if (preg_match(SURU_SYNTHETIC_NAME_RE, $name)) {
+    $dropped_synthetic[] = $o;
+    continue;
+  }
+  $kept[] = $o;
+}
+if (count($dropped_synthetic) > 0) {
+  echo "[syslog-ng-apply] Pruned " . count($dropped_synthetic) . " stale SURU-synthetic object(s) (superseded log/options blocks):" . PHP_EOL;
+  foreach ($dropped_synthetic as $o) {
+    echo "  - {$o['objecttype']} {$o['objectname']}" . PHP_EOL;
+  }
 }
 
 [$kept, $dropped_stale] = suru_drop_dangling_objects($kept, $parsed);

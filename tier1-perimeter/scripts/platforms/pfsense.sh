@@ -378,15 +378,29 @@ if (!$any_iface) {
   echo "CHECK suricata.rulesets=" . ($any_rulesets_empty ? 'warn:empty_on_some_iface' : 'ok') . PHP_EOL;
 }
 
-// 4. pfBlockerNG DNSBL feeds — should have at least one SURU-managed entry
+// 4. pfBlockerNG DNSBL feeds — should have at least one SURU-managed entry,
+//    and every SURU-managed entry's action MUST be the literal "unbound".
+//    pfBlockerNG's cron list-builder (pfblockerng.inc) only queues an alias
+//    for DNSBL download/compile when action=='unbound'; any other value
+//    (e.g. an IP-alias-style "Deny Both") silently routes it into the IP-deny
+//    build path instead, where domain content never downloads. Live-verified
+//    2026-06-23: every SURU_ DNSBL alias on the router had action="Deny Both"
+//    and zero files in /var/db/pfblockerng/dnsblorig/ — this CHECK exists to
+//    catch a regression of that exact bug class before it reaches the router.
 $pfb = $ip->pfblockerngdnsbl->config ?? [];
 $has_suru_pfb = false;
+$bad_action_aliases = [];
 foreach ($pfb as $f) {
-  if (stripos((string)$f->aliasname, 'suru') !== false || stripos((string)$f->aliasname, 'pfb_') !== false) {
-    $has_suru_pfb = true; break;
+  $is_suru = stripos((string)$f->aliasname, 'suru') !== false || stripos((string)$f->aliasname, 'pfb_') !== false;
+  if ($is_suru) {
+    $has_suru_pfb = true;
+    if ((string)$f->action !== 'unbound') {
+      $bad_action_aliases[] = (string)$f->aliasname . ':' . (string)$f->action;
+    }
   }
 }
 echo "CHECK pfblockerngdnsbl.suru_entry=" . ($has_suru_pfb ? 'ok' : 'warn:no_suru_named_feed') . PHP_EOL;
+echo "CHECK pfblockerngdnsbl.action_unbound=" . (empty($bad_action_aliases) ? 'ok' : 'warn:' . implode(',', $bad_action_aliases)) . PHP_EOL;
 
 echo "STATUS=done" . PHP_EOL;
 EOPHP

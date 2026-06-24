@@ -5,16 +5,32 @@
 #
 # MITRE ATT&CK coverage noted per feed.
 # Validation: yq eval '.' dnsbl-categories.yml > /dev/null && echo OK
+#
+# `action` MUST be the literal string "unbound" for every entry. pfBlockerNG's
+# list-builder cron (pfblockerng.inc) only queues an alias for its DNSBL
+# download/compile pass when action=='unbound'; any other value (e.g. the
+# IP-alias-style "Deny Both") routes it into the IP-deny build path instead,
+# where domain content is silently never fetched/compiled. Live-confirmed on
+# the router 2026-06-23: every alias here previously shipped with
+# action="Deny Both" and had ZERO files in /var/db/pfblockerng/dnsblorig/.
 ---
+# NOTE: this `global:` block is documentation only — render-pfblockerng.sh
+# reads only `.feeds[]` from this file. The actual enforcement-mode setting
+# is `tier1-perimeter/pfsense/pfblockerng-globals-apply.php`'s
+# $baseline_dnsbl['dnsbl_mode'], which MUST be the literal string
+# "dnsbl_python" (pfBlockerNG's only other valid value, "dnsbl_unbound", is
+# a different, heavier zone-file-based mode that does not pair with
+# pfb_py_block — see that file's comment for the live incident this
+# documents). Keep this block's `dnsbl_mode` value in sync for readability.
 global:
-  dnsbl_mode: unbound_python
+  dnsbl_mode: dnsbl_python
   blocking_ip: "0.0.0.0"
   port: 8081
   interface: lo0
 
 feeds:
   - aliasname: SURU_StevenBlack_Unified
-    action: "Deny Both"
+    action: "unbound"
     url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
     format: Domain
     state: Enabled
@@ -23,38 +39,28 @@ feeds:
     desc: "Steven Black unified hosts — ads, malware"
     mitre: [T1566, T1071.004]
 
-  - aliasname: SURU_ET_DNSBL
-    action: "Deny Both"
-    url: "https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt"
-    format: Domain
-    state: Enabled
-    update: Daily
-    priority: 5
-    desc: "Emerging Threats DNSBL block list"
-    mitre: [T1071, T1566]
-
   - aliasname: SURU_URLhaus_Malware
-    action: "Deny Both"
-    url: "https://urlhaus.abuse.ch/downloads/domainlist/"
+    action: "unbound"
+    url: "https://urlhaus.abuse.ch/downloads/hostfile/"
     format: Domain
     state: Enabled
     update: Daily
     priority: 5
-    desc: "URLhaus active malware domains"
+    desc: "URLhaus active malware domains (hosts-file export — /downloads/domainlist/ was retired by abuse.ch and now 404s)"
     mitre: [T1566.002, T1071, T1588, T1583]
 
-  - aliasname: SURU_PhishTank
-    action: "Deny Both"
-    url: "http://data.phishtank.com/data/online-valid.csv"
-    format: CSV
+  - aliasname: SURU_OpenPhish
+    action: "unbound"
+    url: "https://openphish.com/feed.txt"
+    format: Domain
     state: Enabled
     update: Daily
     priority: 5
-    desc: "PhishTank verified phishing domains"
+    desc: "OpenPhish community phishing feed — replaces SURU_PhishTank: data.phishtank.com now returns 403 (PhishTank discontinued the unauthenticated public feed)"
     mitre: [T1566]
 
   - aliasname: SURU_Disconnect_Tracking
-    action: "Deny Both"
+    action: "unbound"
     url: "https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt"
     format: Domain
     state: Enabled
@@ -62,3 +68,43 @@ feeds:
     priority: 2
     desc: "Disconnect.me tracking domains"
     mitre: []
+
+  - aliasname: SURU_Disconnect_Malware
+    action: "unbound"
+    url: "https://s3.amazonaws.com/lists.disconnect.me/simple_malware.txt"
+    format: Domain
+    state: Enabled
+    update: Weekly
+    priority: 3
+    desc: "Disconnect.me malware-serving domains"
+    mitre: [T1071.004, T1588]
+
+  - aliasname: SURU_MVPS
+    action: "unbound"
+    url: "https://winhelp2002.mvps.org/hosts.txt"
+    format: Domain
+    state: Enabled
+    update: Weekly
+    priority: 3
+    desc: "MVPS hosts — long-standing curated malware/ad domain list"
+    mitre: [T1566, T1071.004]
+
+  - aliasname: SURU_NoCoin
+    action: "unbound"
+    url: "https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/hosts.txt"
+    format: Domain
+    state: Enabled
+    update: Weekly
+    priority: 4
+    desc: "NoCoin — browser cryptojacking/cryptomining script domains"
+    mitre: [T1496]
+
+  - aliasname: SURU_PeterLowe_Adservers
+    action: "unbound"
+    url: "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0"
+    format: Domain
+    state: Enabled
+    update: Weekly
+    priority: 2
+    desc: "Peter Lowe's ad/tracker server list — reduces malvertising attack surface"
+    mitre: [T1189]

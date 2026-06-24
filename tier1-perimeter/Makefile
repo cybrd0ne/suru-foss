@@ -55,10 +55,11 @@ TESTS     := $(REPO_ROOT)/tier2-telemetry/build/tests/test-render.sh
 API_LIB   := $(REPO_ROOT)/tier1-perimeter/scripts/lib/api.sh
 
 SNG_METRICS := $(REPO_ROOT)/tier1-perimeter/scripts/syslog-ng-metrics.sh
+VERIFY_PFB  := $(REPO_ROOT)/tier1-perimeter/scripts/verify-pfblockerng-feeds.sh
 
 .PHONY: render deploy deploy-full clean test \
         api-health api-validate api-install-pfrest api-reload-rules api-bootstrap \
-        sng-metrics sng-status sng-buffer sng-lag
+        sng-metrics sng-status sng-buffer sng-lag verify-pfblockerng
 
 render:
 	@echo "[suru] Rendering T2 intelligence into T1 templates for platform: $(PLATFORM)"
@@ -122,3 +123,10 @@ sng-buffer:
 
 sng-lag:
 	@bash $(SNG_METRICS) --lag $(if $(filter true,$(VERBOSE)),--verbose,)
+
+# ---------------------------------------------------------------------------
+# pfBlockerNG feed validation — cross-checks live config.xml against
+# /var/db/pfblockerng/{deny,dnsbl,dnsblorig}/ on the router
+# ---------------------------------------------------------------------------
+verify-pfblockerng:
+	@bash $(VERIFY_PFB) $(if $(filter true,$(VERBOSE)),--verbose,)
