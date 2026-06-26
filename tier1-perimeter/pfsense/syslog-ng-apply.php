@@ -128,6 +128,20 @@ function suru_parse_syslogng_conf(string $src): array {
 // an operator's own object, regardless of which naming scheme produced it.
 const SURU_SYNTHETIC_NAME_RE = '/^(log|options)_suru_[0-9a-f]+$/';
 
+// Named objects that PRIOR template versions emitted under SURU ownership but
+// the current template no longer does. Because they carry an operator-style
+// (non-synthetic) name, the keep/prune loop below would otherwise misclassify
+// them as operator-authored and preserve them forever. They must be pruned so
+// a template refactor that drops a named object self-heals on the next deploy.
+//   - t_json_base: removed 2026-06-25. The JSON template is now INLINED into
+//     d_siem_tls. As a separate `template` object it was re-emitted AFTER the
+//     destination by syslogng_build_conf's type-grouped ordering, so the
+//     destination's `template(t_json_base)` reference degraded to the literal
+//     string "t_json_base" (syslog-ng does not forward-resolve template refs) —
+//     shipping 11 bytes of constant text instead of JSON and breaking all SIEM
+//     ingestion (incident 2026-06-23). Pruning removes the now-inert leftover.
+const SURU_LEGACY_OWNED_NAMES = ['t_json_base'];
+
 // Object types that can be the TARGET of a reference (source(NAME),
 // destination(NAME), filter(NAME), rewrite(NAME), parser(NAME),
 // template(NAME) calls inside another object's body). 'log' and 'options'
@@ -248,6 +262,12 @@ foreach ($existing as $o) {
   // in suru_parse_syslogng_conf()), and stops future template edits from
   // accumulating new ones.
   if (preg_match(SURU_SYNTHETIC_NAME_RE, $name)) {
+    $dropped_synthetic[] = $o;
+    continue;
+  }
+  // Legacy SURU-owned named objects the current template no longer emits
+  // (e.g. t_json_base after it was inlined) — prune, don't preserve.
+  if (in_array($name, SURU_LEGACY_OWNED_NAMES, true)) {
     $dropped_synthetic[] = $o;
     continue;
   }
