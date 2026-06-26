@@ -75,6 +75,26 @@ destination d_siem_tls {
         so-keepalive(yes)
         log-fifo-size(10000)
         throttle(0)
+        # Inlined JSON template — kept byte-identical to the pfSense template's
+        # destination. A named `template t_json_base` object is deliberately
+        # NOT used: on pfSense, syslogng_resync() re-emits templates AFTER the
+        # destinations that reference them, and syslog-ng does not forward-
+        # resolve template() refs, silently degrading the reference to the
+        # literal string "t_json_base" (see tier1 SKILL §10c). Inlining keeps
+        # both platform templates immune to that class of bug.
+        template("$(format-json \
+            time=$ISODATE \
+            host=$HOST \
+            facility=$FACILITY \
+            severity=$LEVEL \
+            program=$PROGRAM \
+            pid=$PID \
+            message=$MSG \
+            raw_message=$RAWMSG \
+            syslog_tag=$SYSLOGTAG \
+            source_type=syslog \
+            sensor=@@SENSOR_NAME@@ \
+        )\n")
     );
 };
 
@@ -85,24 +105,6 @@ destination d_local_fallback {
         owner("root")
         group("wheel")
     );
-};
-
-# --- Template ----------------------------------------------------------------
-
-template t_json_base {
-    template("$(format-json \
-        time=$ISODATE \
-        host=$HOST \
-        facility=$FACILITY \
-        severity=$LEVEL \
-        program=$PROGRAM \
-        pid=$PID \
-        message=$MSG \
-        raw_message=$RAWMSG \
-        syslog_tag=$SYSLOGTAG \
-        source_type=syslog \
-        sensor=@@SENSOR_NAME@@ \
-    )\n");
 };
 
 # --- Sources -----------------------------------------------------------------

@@ -50,28 +50,18 @@ options {
     trim_large_messages(yes);
 };
 
-# --- Template ----------------------------------------------------------------
-# Defined before destinations so the named reference in d_siem_tls resolves
-# without requiring forward-reference support in the syslog-ng build.
-
-template t_json_base {
-    template("$(format-json \
-        time=$ISODATE \
-        host=$HOST \
-        facility=$FACILITY \
-        severity=$LEVEL \
-        program=$PROGRAM \
-        pid=$PID \
-        message=$MSG \
-        raw_message=$RAWMSG \
-        syslog_tag=$SYSLOGTAG \
-        source_type=syslog \
-        sensor=@@SENSOR_NAME@@ \
-        --scope dot-nv-pairs \
-    )\n");
-};
-
 # --- Destination -------------------------------------------------------------
+# NOTE: the JSON template is INLINED into the destination below, NOT defined as a
+# named `template t_json_base {}` object. The pfSense syslog-ng package renders
+# this config via syslogng_resync()/syslogng_build_conf(), which re-emits objects
+# grouped by type in a FIXED order — templates are emitted AFTER destinations.
+# syslog-ng resolves source/filter/log references globally (forward refs are fine),
+# but a `template(NAME)` whose NAME is not yet defined silently degrades to a
+# literal inline template string "NAME". A named template emitted after the
+# destination that references it therefore ships the constant text "t_json_base"
+# on every message instead of JSON — breaking all SIEM ingestion (incident
+# 2026-06-23). Inlining removes the only order-sensitive reference, so emit order
+# no longer matters. Do NOT reintroduce a named template here.
 
 destination d_siem_tls {
     network(
@@ -90,7 +80,23 @@ destination d_siem_tls {
         so-keepalive(yes)
         log-fifo-size(10000)
         throttle(0)
-        template(t_json_base)
+        # Inlined JSON template (see destination header note — must NOT be a
+        # named `template t_json_base` object: resync re-emits templates after
+        # destinations, degrading a named reference to the literal string).
+        template("$(format-json \
+            time=$ISODATE \
+            host=$HOST \
+            facility=$FACILITY \
+            severity=$LEVEL \
+            program=$PROGRAM \
+            pid=$PID \
+            message=$MSG \
+            raw_message=$RAWMSG \
+            syslog_tag=$SYSLOGTAG \
+            source_type=syslog \
+            sensor=@@SENSOR_NAME@@ \
+            --scope dot-nv-pairs \
+        )\n")
         # Reliable disk-buffer: every message written to disk before ACK.
         # Survives syslog-ng restarts and SIEM outages — position is tracked
         # in the queue file and replay is automatic on reconnect.
@@ -180,6 +186,15 @@ source s_resolver { file("/var/log/resolver.log" follow-freq(1) flags(no-parse) 
 # message content + timestamp when both paths deliver the same event.
 source s_dhcpd { file("/var/log/dhcpd.log" follow-freq(1) flags(no-parse) program-override("dhcpd")); };
 
+# MITRE ATT&CK: TA0001 Initial Access mitigation / TA0011 Command and Control
+# disruption — audit trail for T0b dynamic single-IP perimeter blocks. Written
+# by tier1-perimeter/scripts/lib/api.sh's api_block_ip/api_unblock_ip via the
+# same _api_pfsense_exec call that performs the alias mutation (atomic from the
+# caller's perspective). New capability — library-only, not wired into any
+# always-on path; see api.sh's "DYNAMIC PERIMETER BLOCK — T0b" section.
+# [STUB: alias mutation + reload calls unconfirmed — needs live pfSense test]
+source s_suru_perimeter_block { file("/var/log/suru/perimeter-block.log" follow-freq(1) flags(no-parse) program-override("suru-perimeter-block")); };
+
 # --- Filters -----------------------------------------------------------------
 
 filter f_firewall   { program("filterlog"); };
@@ -190,6 +205,7 @@ filter f_auth       { facility(auth, authpriv); };
 filter f_suricata   { program("suricata") or program("suricata-fast"); };
 filter f_zeek       { program("zeek-conn") or program("zeek-dns") or program("zeek-http") or program("zeek-ssl") or program("zeek-notice") or program("zeek-weird") or program("zeek-files") or program("zeek-dhcp"); };
 filter f_pfblocker  { program("pfblockerng-dnsbl") or program("pfblockerng-ip"); };
+filter f_suru_perimeter_block { program("suru-perimeter-block"); };
 filter f_drop_noise { match("last message repeated" value("MESSAGE")) or program("cron"); };
 
 # --- Rewrites ----------------------------------------------------------------
@@ -202,6 +218,7 @@ rewrite r_add_tag_auth      { set("pfsense-auth",       value(".suru.log_type"))
 rewrite r_add_tag_suricata  { set("suricata-eve",       value(".suru.log_type")); };
 rewrite r_add_tag_zeek      { set("zeek",               value(".suru.log_type")); };
 rewrite r_add_tag_pfblocker { set("pfblockerng",        value(".suru.log_type")); };
+rewrite r_add_tag_perimeter_block { set("suru-perimeter-block", value(".suru.log_type")); };
 rewrite r_add_hostname      { set("${HOST}",            value(".suru.sensor")); };
 rewrite r_add_tier          { set("tier1-perimeter",    value(".suru.tier")); };
 rewrite r_add_version       { set("2.7.0",              value(".suru.config_version")); };
@@ -241,4 +258,8 @@ log { source(s_zeek_conn); source(s_zeek_dns); source(s_zeek_http); source(s_zee
 
 log { source(s_pfblocker_dnsbl); source(s_pfblocker_ip);
       rewrite(r_add_tag_pfblocker); rewrite(r_add_hostname); rewrite(r_add_tier); rewrite(r_add_version);
+      destination(d_siem_tls); flags(flow-control); };
+
+log { source(s_suru_perimeter_block); filter(f_suru_perimeter_block);
+      rewrite(r_add_tag_perimeter_block); rewrite(r_add_hostname); rewrite(r_add_tier); rewrite(r_add_version);
       destination(d_siem_tls); flags(flow-control); };
