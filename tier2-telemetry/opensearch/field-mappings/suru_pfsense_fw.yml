@@ -1,0 +1,64 @@
+# SURU Platform — Layer 3 ECS Field-Mapping Bridge
+# Log type: pfSense firewall filterlog (suru-pfsense-firewall-* index)
+# Purpose: maps Sigma-abstract field names (Layer 1) to the concrete ECS v8
+#          field path emitted by this deployment's Logstash pfSense pipeline,
+#          for OpenSearch Security Analytics custom-log-type field-mapping.
+#
+# Sources of truth cross-checked for every ecs_field below:
+#   - `tier2-telemetry/opensearch/field-mappings/README.md` "pfSense firewall (suru-pfsense-firewall-*)"
+#   - tier3-core/config/opensearch/index-templates/suru-ecs-template.json
+#
+# This file covers the firewall/filterlog sub-index only (suru-pfsense-firewall-*),
+# distinct from pfSense services (DNS/DHCP/auth) which are out of scope for the
+# Security Analytics coverage map (§ Coverage map: firewall block/pass events
+# feed correlation category 1/2 de-dup against Suricata/pfBlockerNG).
+
+log_type: suru_pfsense_fw
+index_pattern: suru-pfsense-firewall-*
+description: >
+  pfSense filterlog firewall events normalized to ECS v8 by the tier3-core
+  Logstash pfSense pipeline. event.action distinguishes block/pass verdicts,
+  consumed by correlation-rule exclusion predicates to avoid re-alerting on
+  traffic the perimeter already blocked.
+
+mappings:
+  - raw_field: timestamp
+    ecs_field: "@timestamp"
+  - raw_field: event_module
+    ecs_field: event.module
+  - raw_field: action
+    ecs_field: event.action
+  - raw_field: direction
+    ecs_field: network.direction
+  - raw_field: src_ip
+    ecs_field: source.ip
+  - raw_field: dest_ip
+    ecs_field: destination.ip
+  - raw_field: src_port
+    ecs_field: source.port
+  - raw_field: dest_port
+    ecs_field: destination.port
+  - raw_field: proto
+    ecs_field: network.transport
+  - raw_field: interface
+    ecs_field: observer.ingress.interface.name
+  - raw_field: rule_tracker_id
+    ecs_field: rule.id
+
+  # GeoIP/ASN enrichment (Logstash geoip filter, public IPs only)
+  - raw_field: src_geo_country_name
+    ecs_field: source.geo.country_name
+  - raw_field: src_geo_country_iso_code
+    ecs_field: source.geo.country_iso_code
+  - raw_field: src_as_number
+    ecs_field: source.as.number
+  - raw_field: src_as_org_name
+    ecs_field: source.as.organization.name
+  - raw_field: dest_geo_country_name
+    ecs_field: destination.geo.country_name
+  - raw_field: dest_geo_country_iso_code
+    ecs_field: destination.geo.country_iso_code
+  - raw_field: dest_as_number
+    ecs_field: destination.as.number
+  - raw_field: dest_as_org_name
+    ecs_field: destination.as.organization.name

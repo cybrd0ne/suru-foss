@@ -1,0 +1,139 @@
+# [STUB: endpoint telemetry not yet ingested into OpenSearch — EDR-agent->OpenSearch path; future agent wire-up; no live index exists today]
+#
+# SURU Platform — Layer 2 Detector Skeleton: Execution & Persistence (TA0002 / TA0003)
+#
+# This is a SKELETON, not a deployable detector. It binds to `suru_endpoint`
+# (tier2-telemetry/opensearch/field-mappings/suru_endpoint.yml), a field-mapping
+# file whose every mapping is UNCONFIRMED/ASPIRATIONAL — see that file's header.
+#
+# Naming contract: the `.stub.yml` suffix is INTENTIONAL and load-bearing.
+# T3's render step (tier2-telemetry/build/lib/render-tier3.sh, a separate task)
+# MUST glob-exclude `*.stub.*` so this file is never provisioned into the live
+# OpenSearch cluster by accident. Do not rename this file to drop `.stub.` without
+# completing the "future agent" steps in suru_endpoint.yml's header first.
+#
+# Per CONTRIBUTING.md: the `index_pattern` below
+# (`suru-endpoint-*`) is a GUESS at a future index naming convention, not a name
+# read from any live index (none exists — confirmed via no EDR Manager / no
+# EDR agent-OpenSearch output plugin in this deployment as of this writing).
+#
+# Future agent — before promoting any rule out of this stub file:
+#   1. Confirm a real `suru-endpoint-*` (or whatever it ends up named) index exists
+#      and is populated by a live EDR agent -> OpenSearch pipeline.
+#   2. Rewrite tier2-telemetry/opensearch/field-mappings/suru_endpoint.yml against
+#      the REAL alert/event JSON shape (read it, don't guess) and flip `confirmed: true`
+#      per mapping as each is verified.
+#   3. Author real Layer-1 Sigma rules under tier2-telemetry/sigma/rules/execution/
+#      and tier2-telemetry/sigma/rules/persistence/ targeting the confirmed fields.
+#   4. Split this skeleton into individual non-stub detector files per Sigma rule,
+#      following the Layer 2 binding pattern used by the buildable categories
+#      (reconnaissance, initial-access, c2, exfiltration, defense-evasion).
+#   5. Inject a known-matching test event and confirm a live finding before marking
+#      any individual detector done (CONTRIBUTING.md;
+#      plan-level Risk R2/R3 in docs/.../smooth-weaving-hippo.md).
+#
+# Status: stub-only, future-agent extension. No live wiring. No assumption that
+# any endpoint telemetry index currently exists in OpenSearch.
+
+name: execution-persistence-stub
+status: stub
+buildable: false
+owner_tier: tier2-telemetry
+field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_endpoint.yml
+index_pattern: suru-endpoint-*   # PLACEHOLDER — unconfirmed naming, no live index exists
+log_type: suru_endpoint
+
+mitre:
+  tactics:
+    - id: TA0002
+      name: Execution
+    - id: TA0003
+      name: Persistence
+
+# Skeleton technique entries — each is a future Layer-1 Sigma rule binding target,
+# not a working detector. `sigma_rule_ref` paths are PLACEHOLDERS (files do not
+# exist yet); `selection_sketch` is illustrative only, not a real Sigma `detection:`
+# block, and has NOT been run through `sigma check`.
+techniques:
+  - id: T1059
+    name: Command and Scripting Interpreter
+    tactic: TA0002
+    sigma_rule_ref: tier2-telemetry/sigma/rules/execution/suru-t1059-command-scripting-interpreter.yml  # [STUB: file does not exist]
+    selection_sketch:
+      process.parent.name|endswith:
+        - 'winword.exe'
+        - 'excel.exe'
+        - 'outlook.exe'
+      process.name|endswith:
+        - 'powershell.exe'
+        - 'cmd.exe'
+        - 'wscript.exe'
+        - 'cscript.exe'
+    falsepositives:
+      - Legitimate admin scripting via approved RMM/scheduled-task tooling
+      - Office macro-enabled business workflows (must be allowlisted by host/user)
+    notes: >
+      PLACEHOLDER selection logic. Real rule must be authored against confirmed
+      process.* fields once suru_endpoint.yml mappings are verified.
+
+  - id: T1547
+    name: "Boot or Logon Autostart Execution"
+    tactic: TA0003
+    sigma_rule_ref: tier2-telemetry/sigma/rules/persistence/suru-t1547-boot-logon-autostart.yml  # [STUB: file does not exist]
+    selection_sketch:
+      registry.path|contains:
+        - 'CurrentVersion\\Run'
+        - 'CurrentVersion\\RunOnce'
+      event.action: 'registry_value_set'
+    falsepositives:
+      - Legitimate software installers registering autostart entries
+    notes: >
+      PLACEHOLDER selection logic. Real rule must be authored against confirmed
+      registry.* fields once suru_endpoint.yml mappings are verified.
+
+  - id: T1543
+    name: "Create or Modify System Process"
+    tactic: TA0003
+    sigma_rule_ref: tier2-telemetry/sigma/rules/persistence/suru-t1543-create-modify-system-process.yml  # [STUB: file does not exist]
+    selection_sketch:
+      event.action: 'service_created'
+      process.command_line|contains: 'sc.exe create'
+    falsepositives:
+      - Legitimate software/agent installation creating a new Windows service
+    notes: >
+      PLACEHOLDER selection logic. Service-creation event shape unconfirmed.
+
+  - id: T1053
+    name: "Scheduled Task/Job"
+    tactic: TA0002
+    sigma_rule_ref: tier2-telemetry/sigma/rules/execution/suru-t1053-scheduled-task-job.yml  # [STUB: file does not exist]
+    selection_sketch:
+      process.name|endswith: 'schtasks.exe'
+      process.command_line|contains: '/create'
+    falsepositives:
+      - Legitimate backup/maintenance scheduled-task creation
+    notes: >
+      PLACEHOLDER selection logic. schtasks.exe vs cron-equivalent on Linux
+      endpoints not yet differentiated — needs real platform field once endpoint
+      OS diversity is known.
+
+schedule:
+  period_minutes: null   # PLACEHOLDER — not scheduled, detector is not deployable
+
+actions:
+  default: null   # PLACEHOLDER — no action wired; per plan, email is the default
+                   # action type once a detector is buildable, perimeter_block is
+                   # opt-in only after FP rate is proven (see T4b)
+
+exclusion_predicates: []   # PLACEHOLDER — no Tier-1 de-dup predicate defined; this
+                            # category has no existing Tier-1 perimeter equivalent
+                            # to de-dup against (endpoint-only telemetry)
+
+verification:
+  static: not_run   # sigma check / JSON schema validation intentionally skipped —
+                     # this is a non-deployable stub, see header
+  live_detection_confirmed: false
+  rationale: >
+    Per task instructions: do not attempt any live OpenSearch calls, do not assume
+    any index exists. This file is excluded from T3's render step by the `.stub.yml`
+    naming convention and must never be imported into a live OpenSearch cluster.

@@ -1,0 +1,106 @@
+# SURU Platform — Layer 3 ECS Field-Mapping Bridge
+# Log type: Suricata EVE (suru-suricata-* index)
+# Purpose: maps Sigma-abstract field names (Layer 1, tier2-telemetry/sigma/rules/**)
+#          to the concrete ECS v8 field path emitted by this deployment's Logstash
+#          Suricata pipeline, for OpenSearch Security Analytics custom-log-type
+#          field-mapping (rendered to the OpenSearch wire format by T3).
+#
+# Sources of truth cross-checked for every ecs_field below:
+#   - `tier2-telemetry/opensearch/field-mappings/README.md` "Suricata-specific (suru-suricata-*)"
+#   - tier3-core/config/opensearch/index-templates/suru-ecs-template.json
+#
+# MITRE ATT&CK: not applicable to this file directly — this is the normalization
+# bridge consumed by Layer 1/2 detectors, which themselves carry MITRE TA/T tags.
+#
+# NOTE: this Suricata mapping only covers alert/dns/http/tls sub-events
+# (event.dataset discriminates them within the same index). Universal fields
+# (source.ip, destination.ip, etc.) are repeated here rather than factored into
+# a shared "common.yml" because OpenSearch Security Analytics custom-log-type
+# field mappings are defined per log type, with no native include/inherit
+# mechanism — duplication here matches the target wire format, not laziness.
+
+log_type: suru_suricata
+index_pattern: suru-suricata-*
+description: >
+  Suricata EVE JSON (alert, dns, http, tls sub-events) normalized to ECS v8 by
+  the tier3-core Logstash Suricata pipeline. event.dataset discriminates the
+  sub-event type within this single index.
+
+mappings:
+  # Universal / envelope fields
+  - raw_field: timestamp
+    ecs_field: "@timestamp"
+  - raw_field: event_module
+    ecs_field: event.module
+  - raw_field: event_dataset
+    ecs_field: event.dataset
+  - raw_field: event_kind
+    ecs_field: event.kind
+  - raw_field: event_action
+    ecs_field: event.action
+  - raw_field: event_category
+    ecs_field: event.category
+  - raw_field: src_ip
+    ecs_field: source.ip
+  - raw_field: dest_ip
+    ecs_field: destination.ip
+  - raw_field: src_port
+    ecs_field: source.port
+  - raw_field: dest_port
+    ecs_field: destination.port
+  - raw_field: proto
+    ecs_field: network.transport
+  - raw_field: app_proto
+    ecs_field: network.application
+  - raw_field: in_iface
+    ecs_field: in_iface
+
+  # Alert sub-event (event.dataset:"alert")
+  - raw_field: alert_action
+    ecs_field: event.action
+  - raw_field: alert_signature
+    ecs_field: rule.name
+  - raw_field: alert_category
+    ecs_field: rule.category
+  - raw_field: alert_signature_id
+    ecs_field: rule.id
+
+  # DNS sub-event (event.dataset:"dns")
+  - raw_field: dns_query_name
+    ecs_field: dns.rrname
+  - raw_field: dns_query_type
+    ecs_field: dns.rrtype
+
+  # HTTP sub-event (event.dataset:"http")
+  - raw_field: http_hostname
+    ecs_field: http.hostname
+  - raw_field: http_url
+    ecs_field: http.url
+  - raw_field: http_method
+    ecs_field: http.http_method
+  - raw_field: http_status
+    ecs_field: http.status
+
+  # TLS sub-event (event.dataset:"tls")
+  - raw_field: tls_sni
+    ecs_field: tls.sni
+  - raw_field: tls_version
+    ecs_field: tls.version
+
+  # GeoIP/ASN enrichment (Logstash geoip filter, public IPs only)
+  - raw_field: src_geo_country_name
+    ecs_field: source.geo.country_name
+  - raw_field: src_geo_country_iso_code
+    ecs_field: source.geo.country_iso_code
+  - raw_field: src_as_number
+    ecs_field: source.as.number
+  - raw_field: src_as_org_name
+    ecs_field: source.as.organization.name
+  - raw_field: dest_geo_country_name
+    ecs_field: destination.geo.country_name
+  - raw_field: dest_geo_country_iso_code
+    ecs_field: destination.geo.country_iso_code
+  - raw_field: dest_as_number
+    ecs_field: destination.as.number
+  - raw_field: dest_as_org_name
+    ecs_field: destination.as.organization.name

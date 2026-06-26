@@ -1,0 +1,53 @@
+# SURU Platform — Sigma Rule: Large/Anomalous Outbound Data Transfer
+# MITRE ATT&CK: TA0010 Exfiltration / T1041 (Exfiltration Over C2 Channel),
+# T1048 (Exfiltration Over Alternative Protocol)
+# Source: Zeek conn.log, normalized to ECS v8 by the tier3-core Logstash Zeek
+# pipeline (event.dataset:"conn"). source.bytes/destination.bytes are
+# confirmed present in suru-ecs-template.json (source/destination "bytes":
+# {"type":"long"}) and mapped in
+# tier2-telemetry/opensearch/field-mappings/suru_zeek_conn.yml
+# (orig_bytes -> source.bytes, resp_bytes -> destination.bytes).
+# Correlates with: zeek/scripts/suru-dns-entropy.zeek's
+# SURU_DNS::DNS_High_Entropy_Query notice (see
+# command-and-control/dns-tunneling-high-entropy.yml) — DNS tunneling is a
+# low-and-slow exfiltration channel that this byte-count heuristic, scoped to
+# conn.log, does not by itself catch; the two rules are intended to be bound
+# by separate detectors and correlated (T4a), not merged into one rule, since
+# they have different logsource/selectors.
+# Validation: sigma check large-outbound-transfer.yml
+references:
+  - https://attack.mitre.org/techniques/T1041/
+  - https://attack.mitre.org/techniques/T1048/
+title: SURU - Anomalous Large Outbound Transfer (Zeek conn byte-count)
+id: ad2e5b3c-0011-4f8a-9b2c-d3e4f5a6b7c8
+status: experimental
+description: |
+  Detects single connections with an anomalously large outbound byte count
+  (source.bytes) relative to typical SOHO egress, a heuristic indicator of
+  bulk data exfiltration over a single TCP/UDP flow. The literal threshold
+  below is a conservative seed value (100 MB) flagged for the binding
+  OpenSearch detector to tune per-environment (Layer 2 schedule/threshold
+  config); this Sigma selection defines the qualifying field/comparison
+  shape, not a tuned production threshold.
+author: SURU Detection Engineering / SURU Platform
+date: 2026/06/25
+modified: 2026/06/25
+tags:
+  - attack.ta0010
+  - attack.t1041
+  - attack.t1048
+logsource:
+  category: network_connection
+  product: zeek
+  service: conn
+detection:
+  selection:
+    event.dataset: conn
+    source.bytes|gte: 100000000
+  condition: selection
+falsepositives:
+  - "Legitimate large transfers: cloud backup jobs, NAS sync, software/firmware
+    updates, media streaming/upload, VPN bulk traffic"
+  - Self-hosted backup or media-server egress to an authorized destination —
+    allowlist the destination IP/ASN once confirmed benign
+level: medium

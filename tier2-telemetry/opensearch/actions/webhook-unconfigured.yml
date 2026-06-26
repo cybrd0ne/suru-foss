@@ -1,0 +1,57 @@
+# SURU Platform — Layer 2 Action: Generic Webhook (Schema-Present, Unconfigured)
+#
+# Per the feature plan: "every other action type defaults to none/
+# unconfigured — schema supports them, nothing wires them up yet."
+# (smooth-weaving-hippo.md line 79).
+#
+# This file exists so a future task (e.g. a custom SOAR/ticketing
+# integration) can wire a generic webhook action without inventing the
+# schema shape from scratch — it is NOT consumed by any detector today,
+# NOT rendered by T3, and NOT provisioned by T7.
+#
+# [MISSING REFERENCE: OpenSearch Notifications plugin `webhook` channel
+# config schema (custom_webhook url/header/method fields via
+# _plugins/_notifications/configs) — not present in the references skill —
+# propose web search: "OpenSearch Notifications plugin custom webhook
+# channel config schema headers method"]
+
+name: webhook-unconfigured
+status: unconfigured       # schema-present only — no live wiring, no render-step support
+action_type: webhook
+default_for: none
+enabled: false
+
+description: >
+  Placeholder schema for a future generic-webhook notification action
+  (e.g. ticketing/SOAR integration). No detector references this action
+  type. No endpoint is configured. Do not enable by setting
+  `enabled: true` without first implementing the corresponding
+  render-step support in tier2-telemetry/build/lib/render-actions.sh and
+  the live OpenSearch Notifications `webhook` channel config in T7's
+  provisioner — neither exists today.
+
+# ---------------------------------------------------------------------------
+# Parameters below are illustrative of the eventual shape only — values
+# are intentionally placeholder/unset.
+# ---------------------------------------------------------------------------
+webhook:
+  url: "${SECURITY_ANALYTICS_WEBHOOK_URL:-}"          # unset by default; not in any .env.example today
+  method: POST
+  headers:
+    Content-Type: application/json
+    # Authorization: "${SECURITY_ANALYTICS_WEBHOOK_AUTH_HEADER:-}"  # placeholder only — not wired
+
+template:
+  body: >
+    {
+      "detector": "{{detector.name}}",
+      "severity": "{{finding.severity}}",
+      "mitre_tactic": "{{finding.mitre_tactic_id}}",
+      "mitre_technique": "{{finding.mitre_technique_id}}",
+      "source_ip": "{{finding.source_ip}}",
+      "timestamp": "{{finding.timestamp}}"
+    }
+
+mitre_annotation_note: >
+  Not applicable — this action type is unconfigured/unused; no MITRE
+  tagging logic exists for it.

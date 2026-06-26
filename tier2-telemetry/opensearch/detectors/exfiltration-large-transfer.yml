@@ -1,0 +1,78 @@
+# SURU Platform — Layer 2 Detector: Exfiltration / Large Outbound Transfer
+# Binds Layer-1 Sigma rule:
+#   tier2-telemetry/sigma/rules/exfiltration/large-outbound-transfer.yml [T1041, T1048]
+# to the suru_zeek_conn (Layer 3) field-mapping / suru-zeek-* index pattern.
+#
+# Coverage map category: 4 (Exfiltration) — docs/detection-coverage-map.md §2.
+# Cross-references (does not duplicate) the C2 detector
+# (c2-dns-tunneling-entropy.yml) for the DNS-tunneling exfiltration channel —
+# per the plan, low-and-slow DNS exfil is a separate logsource/selector from
+# this conn.log byte-count heuristic and is intentionally a separate detector,
+# correlated at T4a rather than merged here.
+#
+# Tier 1 boundary: there is no Tier 1 perimeter equivalent that blocks based
+# on outbound byte volume — Suricata/pfBlockerNG block on signature/reputation,
+# not transfer size. The exclusion predicates below therefore only de-dup
+# against the case where the SAME connection's destination was independently
+# already flagged as a known-bad indicator (pfBlockerNG) or already blocked
+# (Suricata/pfSense) for an unrelated reason — a large transfer to an
+# already-blocked destination should not double-alert.
+
+name: exfiltration-large-transfer
+status: buildable
+buildable: true
+owner_tier: tier2-telemetry
+index_pattern: suru-zeek-*
+log_type: suru_zeek_conn
+field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_zeek_conn.yml
+
+sigma_rules:
+  - ref: tier2-telemetry/sigma/rules/exfiltration/large-outbound-transfer.yml
+    id: ad2e5b3c-0011-4f8a-9b2c-d3e4f5a6b7c8
+
+mitre:
+  tactics:
+    - id: TA0010
+      name: Exfiltration
+  techniques:
+    - id: T1041
+      name: Exfiltration Over C2 Channel
+    - id: T1048
+      name: Exfiltration Over Alternative Protocol
+
+detection_filter:
+  query: 'event.dataset:"conn" AND source.bytes:>=100000000'
+
+schedule:
+  period_minutes: 10
+
+exclusion_predicates:
+  - description: pfSense firewall already blocked this destination
+    query: 'NOT event.action:"block"'
+  - description: Suricata inline IPS already blocked this destination
+    query: 'NOT event.action:"blocked"'
+  - description: pfBlockerNG already flagged this destination as a known-bad indicator
+    query: 'NOT threat.indicator.type:*'
+
+actions:
+  default: email
+  perimeter_block: false   # opt-in only, per plan — not enabled until FP rate is proven via email alerts;
+                            # also high self-DoS risk here specifically (legitimate large transfers are common)
+
+falsepositives:
+  - "Legitimate large transfers: cloud backup jobs, NAS sync, software/firmware
+    updates, media streaming/upload, VPN bulk traffic"
+  - Self-hosted backup or media-server egress to an authorized destination —
+    allowlist the destination IP/ASN once confirmed benign
+  - 100 MB seed threshold is a conservative starting point, not a tuned
+    production value — expect early-period false positives until tuned per
+    this network's actual baseline egress pattern
+
+verification:
+  static: passed   # YAML schema + ECS field-existence checks, this session
+  live_detection_confirmed: false
+  rationale: >
+    T0a/T7 have not run against a live OpenSearch 3.7.0 instance. Static
+    validity and live-fire behavior are independent checks per
+    CONTRIBUTING.md — only the former is
+    confirmed here.

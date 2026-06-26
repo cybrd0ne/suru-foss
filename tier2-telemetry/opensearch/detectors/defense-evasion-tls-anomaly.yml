@@ -1,0 +1,85 @@
+# SURU Platform — Layer 2 Detector: Defense Evasion / TLS Certificate Anomaly
+# Binds Layer-1 Sigma rule:
+#   tier2-telemetry/sigma/rules/defense-evasion/tls-anomaly-reputation-shift.yml [T1573, T1036]
+# to the suru_zeek_ssl (Layer 3) field-mapping / suru-zeek-* index pattern.
+#
+# Coverage map category: 5 (Defense Evasion) — docs/detection-coverage-map.md §2.
+# Per that row's FP note: "weird.log is high-volume per opensearch-dashboards.md
+# §4 ECS canon notes — needs careful threshold/allowlist tuning before
+# promoting from email-only to perimeter-block action." This detector
+# therefore scopes ONLY to event.dataset:"notice" (alert-kind, per the
+# Notice-vs-weird distinction), not weird.log directly — weird.log volume is
+# explicitly out of scope for this detector's selection to avoid the FP storm
+# the coverage map already flags; a future detector may add a tightly
+# allowlisted weird.log selection once a specific weird `name` is proven
+# low-noise and security-relevant.
+#
+# Tier 1 boundary: pfBlockerNG's reputation feeds (SURU_IP_REP, SURU_IP_C2)
+# block known-bad destination IPs outright; a TLS cert anomaly on a
+# connection to an already-blocked destination should not double-alert.
+# There is no Suricata signature category that directly maps to "invalid
+# cert observed" (Suricata TLS inspection is signature/anomaly based, not a
+# cert-validity verdict), so the Suricata exclusion leg here is limited to
+# the general event.action:"blocked" verdict on the same destination.
+
+name: defense-evasion-tls-anomaly
+status: buildable
+buildable: true
+owner_tier: tier2-telemetry
+index_pattern: suru-zeek-*
+log_type: suru_zeek_ssl
+field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_zeek_ssl.yml
+
+sigma_rules:
+  - ref: tier2-telemetry/sigma/rules/defense-evasion/tls-anomaly-reputation-shift.yml
+    id: be3f6c4d-0012-4a9b-8c3d-e4f5a6b7c8d9
+
+mitre:
+  tactics:
+    - id: TA0005
+      name: Defense Evasion
+  techniques:
+    - id: T1573
+      name: Encrypted Channel
+    - id: T1036
+      name: Masquerading
+
+detection_filter:
+  query: >
+    event.dataset:"notice" AND event.kind:"alert" AND
+    rule.name:*Invalid_Server_Cert*
+
+schedule:
+  period_minutes: 10
+
+exclusion_predicates:
+  - description: pfBlockerNG already flagged this destination as a known-bad indicator
+    query: 'NOT threat.indicator.type:*'
+  - description: pfSense firewall already blocked this destination
+    query: 'NOT event.action:"block"'
+  - description: Suricata inline IPS already blocked this destination
+    query: 'NOT event.action:"blocked"'
+
+actions:
+  default: email
+  perimeter_block: false   # opt-in only, per plan — not enabled until FP rate is proven via email alerts
+
+falsepositives:
+  - Internally self-signed certs for LAN-only admin UIs (router, NAS, hypervisor
+    management) reached via a path Zeek also observes egress-side
+  - Expired certs on low-traffic internal/dev services not yet renewed
+  - Captive-portal or guest-network TLS interception appliances
+
+verification:
+  static: passed   # YAML schema + ECS field-existence checks, this session
+  live_detection_confirmed: false
+  rationale: >
+    T0a/T7 have not run against a live OpenSearch 3.7.0 instance. Additionally,
+    the underlying Sigma rule itself carries a [MISSING REFERENCE] flag for
+    the exact Notice::Type string raised by policy/protocols/ssl/validate-certs
+    in this Zeek version (no live notice.log sample captured) — this detector's
+    rule.name substring match ("Invalid_Server_Cert") is a best-effort match
+    against the documented Zeek X509/SSL notice family, not a confirmed live
+    string. Both the live-OpenSearch-finding confirmation AND a live Zeek
+    notice.log capture are required before this detector can be considered
+    verified, not just statically valid.

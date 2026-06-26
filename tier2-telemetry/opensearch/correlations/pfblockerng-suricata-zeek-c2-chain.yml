@@ -1,0 +1,228 @@
+# SURU Platform — Layer 2 Correlation Rule: UC1 Headline 3-Finding C2 Chain
+#
+# Per the plan's Context section
+# (the feature design document): "pfBlockerNG block +
+# Suricata C2 flag + Zeek anomalous DNS from the same host -> one incident."
+# This is the headline correlation use case the whole Tier-1<->SIEM boundary
+# design exists to support — see plan "Architecture" > "Tier 1 <-> SIEM
+# boundary (bidirectional)".
+#
+# ── Design decision: avoiding a double-counted DNS leg ──────────────────────
+# The plan names "Zeek anomalous DNS" as the third leg. The only Zeek DNS
+# anomaly signal currently built is the DNS-entropy notice
+# (SURU_DNS::DNS_High_Entropy_Query, suru-dns-entropy.zeek) — which is
+# ALREADY the sole Sigma/detector binding behind
+# tier2-telemetry/opensearch/detectors/c2-dns-tunneling-entropy.yml (see that
+# file's header: "T4a's correlation rule references this detector's
+# findings, not duplicated here").
+#
+# Reusing that same notice as leg 3 here, while ALSO joining on a Suricata
+# C2 signature as leg 2, would not be 3 independent pieces of evidence — it
+# would be 2 (DNS-entropy notice + Suricata C2 sig), counted as if it were 3,
+# because the DNS-tunneling Suricata custom rule (SID 9990002, see leg 2
+# below) and the DNS-entropy Zeek notice are TWO INDEPENDENT detectors that
+# both react to the same underlying tunneling traffic — but the plan's three
+# legs are meant to be pfBlockerNG (perimeter block) + Suricata (signature
+# flag) + Zeek (passive NSM anomaly), i.e. three DIFFERENT vantage points on
+# the SAME host, not three rules keyed to the same indicator type.
+#
+# Concretely: this correlation rule's leg 3 is changed to Zeek high-volume
+# DNS QUERY RATE (event.dataset:"dns" cardinality(dns.question.name) per
+# source.ip per window) rather than the entropy notice. This is read
+# directly off Zeek dns.log (suru_zeek_dns.yml field-mapping), is a distinct
+# signal from the ssl/notice-log-sourced entropy detector (suru_zeek_ssl.yml
+# field-mapping, different log type within the shared suru-zeek-* index),
+# and is independently justified: a host that is both (a) reaching a
+# pfBlockerNG-blocked C2 IP, (b) matching a Suricata C2 beacon/tunnel
+# signature, AND (c) generating an abnormally high DNS query volume is a
+# stronger 3-vantage-point signal than reusing the entropy notice twice.
+#
+# If, in a future iteration, the operator wants the entropy notice itself as
+# the canonical "Zeek anomalous DNS" leg, c2-dns-tunneling-entropy.yml's
+# OWN finding (not its underlying notice query) should be referenced via
+# Security Analytics' correlation-on-findings join (joining on the
+# detector's finding ID/source.ip), not by re-querying the same notice.log
+# selector inline here — that distinction (finding-join vs re-query) is left
+# for T7 implementation since it depends on the live SA correlation-rule
+# wire format (T0a, not yet verified).
+#
+# Coverage map category: 3 (C2), cross-tactic — docs/detection-coverage-map.md
+# §2 row "Cross-tactic correlation: pfBlockerNG + Suricata + Zeek (headline
+# use case)".
+
+name: pfblockerng-suricata-zeek-c2-chain
+status: buildable
+buildable: true
+owner_tier: tier2-telemetry
+
+join:
+  key: source.ip
+  window_minutes: 15
+  window_rationale: >
+    15 minutes balances two failure modes: too short (5 min, matching the
+    individual detectors' own schedule.period_minutes) risks splitting a
+    single C2 session's three legs across adjacent detector-run windows,
+    since the underlying detectors run on independent 5/10-minute schedules
+    (reconnaissance-port-scan.yml, c2-dns-tunneling-entropy.yml: 5 min;
+    defense-evasion-tls-anomaly.yml, exfiltration-large-transfer.yml: 10
+    min) and are not phase-aligned. Too long (60+ min) raises the chance of
+    joining two UNRELATED events on a NAT'd/shared source.ip (e.g. a
+    multi-user LAN egress IP) into a false correlated incident. 15 minutes
+    is 3x the longest individual detector period, giving slack for
+    schedule-phase misalignment while still being short enough that an
+    incidental same-IP coincidence across unrelated sessions is unlikely on
+    a SOHO-scale network.
+
+legs:
+  - id: pfblockerng-block
+    description: >
+      pfBlockerNG blocked an outbound connection to a known-bad indicator
+      (DNSBL or IP-reputation feed, e.g. SURU_IP_C2 FeodoTracker/ET
+      Compromised per docs/detection-coverage-map.md §1.3) from this host.
+      Fields confirmed against
+      tier2-telemetry/opensearch/field-mappings/suru_pfblockerng.yml.
+    index_pattern: suru-pfblockerng-*
+    field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_pfblockerng.yml
+    query: 'threat.indicator.type:* AND event.action:"block"'
+    join_field: source.ip
+    mitre:
+      tactics:
+        - id: TA0011
+          name: Command and Control
+        - id: TA0043
+          name: Reconnaissance
+      techniques:
+        - id: T1071
+          name: Application Layer Protocol
+        - id: T1590
+          name: Gather Victim Network Information
+
+  - id: suricata-c2-flag
+    description: >
+      Suricata flagged C2 beacon/tunnel behavior from this host — either an
+      ET Open `emerging-botcc`/`emerging-trojan`/`emerging-dns` CRITICAL
+      category alert, or the project's own custom C2-beacon signatures (SID
+      9990001 HTTP fixed-interval beaconing, SID 9990002 DNS-tunneling long
+      subdomain — tier2-telemetry/suricata/custom-rules/suru-c2-beacons.rules,
+      read 2026-06-24). This leg matches on rule.category/rule.id rather than
+      a specific msg string so it captures both the ET Open categories and
+      the SURU custom SIDs without enumerating every possible signature name.
+      Fields confirmed against
+      tier2-telemetry/opensearch/field-mappings/suru_suricata.yml.
+    index_pattern: suru-suricata-*
+    field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_suricata.yml
+    query: >
+      event.dataset:"alert" AND (rule.category:("A Network Trojan was
+      detected" OR "Misc Attack" OR "Potentially Bad Traffic") OR
+      rule.id:(9990001 OR 9990002))
+    join_field: source.ip
+    mitre:
+      tactics:
+        - id: TA0011
+          name: Command and Control
+      techniques:
+        - id: T1071
+          name: Application Layer Protocol
+        - id: T1071.004
+          name: "Application Layer Protocol: DNS"
+
+  - id: zeek-dns-query-rate-anomaly
+    description: >
+      Zeek dns.log shows an abnormally high distinct-DNS-query-name rate
+      from this host within the join window — a high-volume-DNS signal
+      DISTINCT from the DNS-entropy notice already backing
+      c2-dns-tunneling-entropy.yml (see header note above on avoiding
+      double-counting). Read directly off event.dataset:"dns" per
+      tier2-telemetry/opensearch/field-mappings/suru_zeek_dns.yml (dns.log,
+      not notice.log/ssl.log). High query-name cardinality from a single
+      source in a short window is consistent with DNS-based C2 polling or
+      tunneling that has not (or not yet) crossed the entropy detector's
+      per-query threshold, but still shows an anomalous query RATE.
+      Fields confirmed against
+      tier2-telemetry/opensearch/field-mappings/suru_zeek_dns.yml.
+    index_pattern: suru-zeek-*
+    field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_zeek_dns.yml
+    query: 'event.dataset:"dns"'
+    aggregation:
+      group_by: source.ip
+      metric: cardinality(dns.question.name)
+      # Seed threshold — flagged for per-environment tuning, same discipline
+      # as reconnaissance-port-scan.yml's seed threshold (15) and
+      # exfiltration-large-transfer.yml's seed threshold (100 MB). A normal
+      # host resolving a handful of distinct CDN/service domains per 15 min
+      # should not approach 40 distinct query names; a C2 polling/tunneling
+      # host generating many distinct subdomains will.
+      threshold: 40
+      window_minutes: 15
+    join_field: source.ip
+    mitre:
+      tactics:
+        - id: TA0011
+          name: Command and Control
+      techniques:
+        - id: T1071.004
+          name: "Application Layer Protocol: DNS"
+
+# Chained MITRE across the full correlation (union of all legs' tags, not
+# just one tactic for the whole rule — per task instructions).
+mitre:
+  tactics:
+    - id: TA0011
+      name: Command and Control
+    - id: TA0043
+      name: Reconnaissance
+  techniques:
+    - id: T1071
+      name: Application Layer Protocol
+    - id: T1071.004
+      name: "Application Layer Protocol: DNS"
+    - id: T1590
+      name: Gather Victim Network Information
+
+schedule:
+  period_minutes: 5   # matches the tightest individual leg's schedule (c2-dns-tunneling-entropy.yml); the 15 min join window absorbs the rest
+
+actions:
+  default: email
+  perimeter_block: false   # opt-in only, per plan — not enabled until FP rate is proven via email alerts.
+                            # Note: leg 1 (pfBlockerNG) already blocked the destination; perimeter_block
+                            # here would target the INTERNAL source.ip (the compromised host), which is
+                            # a materially different and higher-impact action than the existing per-detector
+                            # perimeter_block (which blocks external destinations) — requires explicit
+                            # operator review before enabling, independent of the per-leg detectors' own
+                            # perimeter_block state.
+
+falsepositives:
+  - A single legitimate host that is simultaneously (a) reaching a stale/
+    over-broad pfBlockerNG feed entry (e.g. a shared-hosting IP also on
+    SURU_IP_REP), (b) tripping a Suricata category on benign traffic shaped
+    like the signature (see each Suricata SID's own falsepositives metadata
+    in suru-c2-beacons.rules), and (c) generating high DNS query volume from
+    a legitimate cause (browser prefetch, ad-blocker DNS-based filtering
+    re-resolving many domains, a busy proxy/VPN egress host) — the 3-way
+    join significantly reduces this vs. any single leg alone, but a shared
+    NAT/proxy egress IP serving multiple users is the most likely shared-
+    source-ip false correlation.
+  - Security/network appliances themselves (DNS resolvers, ad-blockers,
+    threat-intel scanners) that legitimately generate high DNS query
+    volume and may incidentally share source.ip with a flagged Suricata
+    event due to NAT.
+
+verification:
+  static: passed   # YAML schema + ECS field-existence checks against field-mappings/*.yml and suru-ecs-template.json, this session
+  live_detection_confirmed: false
+  rationale: >
+    T0a/T7 have not run against a live OpenSearch 3.7.0 instance, and the
+    OpenSearch Security Analytics correlation-rule wire format (joining
+    findings vs. raw events, supported join operators) is unverified
+    (plan Risk R1) — this YAML is the tier2 source-of-truth correlation
+    spec; T3's render step is responsible for translating it into whatever
+    the live SA correlation-rule API actually accepts, once T0a confirms the
+    endpoint shape. Per the plan's Verification section, this headline
+    correlation's live-fire confirmation also requires each of the three
+    underlying detectors/queries to be independently live-confirmed first
+    (c2-dns-tunneling-entropy.yml's own verification block notes the same
+    dependency) — static schema validity here is necessary but not
+    sufficient, and the three-leg join must itself be tested with an
+    injected matching event set producing exactly ONE correlated incident,
+    not three separate alerts (CONTRIBUTING.md).

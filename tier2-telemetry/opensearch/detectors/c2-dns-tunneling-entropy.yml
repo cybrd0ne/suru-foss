@@ -1,0 +1,79 @@
+# SURU Platform — Layer 2 Detector: Command and Control / DNS Tunneling (High Entropy)
+# Binds Layer-1 Sigma rule:
+#   tier2-telemetry/sigma/rules/command-and-control/dns-tunneling-high-entropy.yml [T1071.004]
+# to the suru_zeek_ssl (Layer 3) field-mapping family for notice.log-sourced
+# findings (event.dataset:"notice") — the same physical index/log-type used by
+# defense-evasion's ssl/notice/weird selections, scoped here by rule.name.
+#
+# Coverage map category: 3 (C2) — docs/detection-coverage-map.md §2. This
+# detector is also the C2 leg of the plan's headline 3-finding correlation use
+# case (pfBlockerNG block + Suricata C2 flag + Zeek anomalous DNS from the
+# same host -> one incident) — T4a's correlation rule references this
+# detector's findings, not duplicated here.
+#
+# Tier 1 boundary: Suricata's `emerging-dns` CRITICAL category and the
+# project's own custom SID 9990002 (DNS tunneling via long subdomain,
+# tier2-telemetry/suricata/custom-rules/suru-c2-beacons.rules) already alert/
+# block on related DNS-tunneling indicators at the perimeter. pfBlockerNG's
+# SURU_IP_C2 (FeodoTracker/ET Compromised) feed also blocks known C2
+# infrastructure IPs. This detector's exclusion predicate de-dups against
+# all three so the SIEM does not re-alert in isolation on a host the
+# perimeter already blocked for the same C2 indicator.
+
+name: c2-dns-tunneling-entropy
+status: buildable
+buildable: true
+owner_tier: tier2-telemetry
+index_pattern: suru-zeek-*
+log_type: suru_zeek_ssl
+field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_zeek_ssl.yml
+
+sigma_rules:
+  - ref: tier2-telemetry/sigma/rules/command-and-control/dns-tunneling-high-entropy.yml
+    id: 7b4e3f2a-0002-4c6d-9e0f-b2c3d4e5f6a7
+
+mitre:
+  tactics:
+    - id: TA0011
+      name: Command and Control
+  techniques:
+    - id: T1071.004
+      name: "Application Layer Protocol: DNS"
+
+detection_filter:
+  query: >
+    event.dataset:"notice" AND event.kind:"alert" AND
+    rule.name:"SURU_DNS::DNS_High_Entropy_Query"
+
+schedule:
+  period_minutes: 5
+
+exclusion_predicates:
+  - description: Suricata inline IPS already blocked this DNS-tunneling source (emerging-dns / SID 9990002)
+    query: 'NOT event.action:"blocked"'
+  - description: pfSense firewall already blocked this source
+    query: 'NOT event.action:"block"'
+  - description: pfBlockerNG SURU_IP_C2 feed already flagged this destination as known C2 infrastructure
+    query: 'NOT threat.indicator.type:*'
+
+actions:
+  default: email
+  perimeter_block: false   # opt-in only, per plan — not enabled until FP rate is proven via email alerts
+
+falsepositives:
+  - DNSSEC signed zones with long labels
+  - Legitimate CDN domains with hash-encoded subdomains
+  - Suppression in the underlying Zeek script (10 min per host+query,
+    suru-dns-entropy.zeek) reduces but does not eliminate repeat noise from a
+    single legitimate high-entropy domain
+
+verification:
+  static: passed   # YAML schema + ECS field-existence checks, this session
+  live_detection_confirmed: false
+  rationale: >
+    T0a/T7 have not run against a live OpenSearch 3.7.0 instance. Live-fire
+    confirmation for this detector is also the prerequisite for T4a's
+    headline 3-finding correlation use case — per the plan's Verification
+    section, that correlation cannot itself be confirmed until this
+    detector independently produces a finding from an injected matching
+    notice.log event.

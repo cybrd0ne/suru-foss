@@ -1,0 +1,52 @@
+# SURU Platform — Sigma Rule: Remote Services Lateral Movement
+# MITRE ATT&CK: TA0008 Lateral Movement / T1021 (Remote Services)
+# [STUB: this rule targets host process-creation telemetry (Sysmon-style
+# Image/CommandLine fields) that has no ECS v8 mapping in this deployment.
+# suru-ecs-template.json's `process` object carries only `process.pid` —
+# there is no process.command_line / process.executable / process.name, and
+# no endpoint/EDR log source is ingested today. Per the SIEM Security
+# Analytics plan (T1c), execution/persistence and other endpoint-sourced
+# detections are stub-only until a future EDR-agent (or other EDR) feed is
+# wired into tier3 ingestion. Grep evidence:
+#   grep -A2 '"process"' tier3-core/config/opensearch/index-templates/suru-ecs-template.json
+#   -> only "pid": {"type":"integer"}
+# Do not invent process.command_line/process.executable fields to make this
+# rule "work" — that produces silent zero-detections (plan Risk R2), not a
+# real detector. Re-author this rule against the real endpoint ECS schema
+# once T1c's endpoint field-mapping bridge lands and a live source exists.]
+# Migrated from (retired): sigma-rules/lateral-movement/t1021-remote-services.yaml
+title: SURU - Remote Services Lateral Movement (STUB — no live ECS source)
+id: suru-lm-001
+status: experimental
+description: |
+  Detects suspicious use of remote-access binaries (ssh/scp/rsync) for
+  lateral movement via process-creation telemetry. STUB: no endpoint/EDR
+  telemetry is ingested into this deployment's OpenSearch cluster today, and
+  suru-ecs-template.json has no process.command_line/process.executable
+  mapping to bind this rule's `Image`/`CommandLine` fields to. This rule
+  cannot fire until an endpoint data source is added (see T1c stub scaffold,
+  tier2-telemetry/opensearch/field-mappings/suru_endpoint.yml).
+references:
+  - https://attack.mitre.org/techniques/T1021/
+author: SURU Detection Engineering
+date: 2026/01/01
+modified: 2026/06/24
+tags:
+  - attack.ta0008
+  - attack.t1021
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  selection:
+    Image|endswith:
+      - '/ssh'
+      - '/scp'
+      - '/rsync'
+    CommandLine|contains:
+      - '-o StrictHostKeyChecking=no'
+      - 'ProxyJump'
+  condition: selection
+falsepositives:
+  - Automated deployment pipelines (allowlist in tuning/)
+level: medium

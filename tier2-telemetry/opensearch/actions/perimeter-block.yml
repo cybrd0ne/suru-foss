@@ -1,0 +1,174 @@
+# SURU Platform — Layer 2 Action: Perimeter Block (OPT-IN — NOT a default)
+#
+# ============================================================================
+# THIS ACTION TYPE IS NOT ENABLED ON ANY DETECTOR BY DEFAULT.
+#
+# Every Layer 2 detector shipped today sets `actions.perimeter_block: false`
+# explicitly (c2-dns-tunneling-entropy.yml:61, exfiltration-large-transfer.yml:58-59,
+# defense-evasion-tls-anomaly.yml:65, initial-access-exploit-public-facing.yml:63,
+# reconnaissance-port-scan.yml:81). Per the feature plan's R4 guardrail and
+# the operator's explicit instruction, perimeter_block is something the
+# operator manually opts a SPECIFIC detector into LATER, in that detector's
+# own tier2-telemetry/opensearch/detectors/<slug>.yml config, only once that
+# rule's false-positive rate has been proven acceptable via email alerts
+# first (email-default.yml). This file defines the action's schema/
+# parameters now so the capability is documented and ready — it does not
+# itself turn anything on.
+#
+# Plan quote (smooth-weaving-hippo.md):
+#   "Every detector ships with email as the default action. Perimeter-block
+#    is a second action type the operator can opt into per detector, in
+#    tier2 config, once a rule's false-positive rate is proven out via email
+#    alerts first — not a global default."
+#   R4: "Auto-block self-DoS risk from perimeter_block — mitigated by
+#    opt-in-per-detector (not default), TTL/expiry, management-host
+#    allowlist, rate-limiting, mandatory SIEM audit of every block/unblock."
+# ============================================================================
+#
+# CALL TARGET — T0b's actual function signature (tier1-perimeter/scripts/lib/api.sh)
+# ----------------------------------------------------------------------------
+# This action calls `api_block_ip IP [TTL_SECONDS]` (api.sh:1305-1344) — NOT
+# a guessed interface. Read directly from api.sh:
+#
+#   api_block_ip() {
+#     local ip="$1" ttl="${2:-${PERIMETER_BLOCK_DEFAULT_TTL}}"
+#     ...
+#   }
+#
+# Guardrails api_block_ip enforces internally, in order (api.sh:1305-1344),
+# all of which this action's parameters below feed as environment, not as
+# extra arguments — the function takes exactly two positional args (IP and
+# an optional TTL override):
+#   1. platform check               ROUTER_PLATFORM must be pfsense (api.sh:1309-1310)
+#   2. IP syntax                    _perimeter_block_valid_ipv4 (api.sh:1312-1313)
+#   3. TTL bound                    0 < ttl <= PERIMETER_BLOCK_MAX_TTL (api.sh:1315-1318)
+#   4. allowlist                    _perimeter_block_is_allowlisted — RFC1918/
+#                                    loopback/ROUTER_HOST floor + PERIMETER_BLOCK_ALLOWLIST
+#                                    (api.sh:1320-1323)
+#   5. rate limit                   _perimeter_block_rate_limit_check — max
+#                                    PERIMETER_BLOCK_MAX_PER_WINDOW per
+#                                    PERIMETER_BLOCK_WINDOW_SECONDS (api.sh:1325-1328)
+#   6. alias mutation + reload      _perimeter_block_php_mutate_alias +
+#                                    _perimeter_block_reload — both [STUB:
+#                                    unconfirmed live] per api.sh's own header
+#                                    (api.sh:1037-1042) and inline comments
+#                                    (api.sh:1240, 1282) — this action wires
+#                                    to the function interface regardless;
+#                                    the STUB status is T0b's open item, not
+#                                    this action config's concern.
+#   7. TTL state + audit            _perimeter_block_ttl_set +
+#                                    _perimeter_block_audit (api.sh:1338-1340)
+#
+# Unblock uses the mirror function `api_unblock_ip IP` (api.sh:1350-1373),
+# called automatically by `api_perimeter_block_expire_sweep` (api.sh:
+# 1388-1411) on a cron/systemd-timer cadence documented in that function's
+# own header (api.sh:1380-1386) — this action does not re-implement expiry;
+# it relies on the existing sweep.
+#
+# This action's job is therefore narrow: when a detector that has been
+# opted in produces a high-confidence finding, shell out to
+# `tier1-perimeter/scripts/lib/api.sh` (sourcing lib/log.sh first, per the
+# sweep's own documented invocation pattern at api.sh:1383-1386) and call
+# `api_block_ip "${finding.source_ip}" "${ttl_seconds}"`. No new blocking
+# mechanism is invented — api_block_ip's own guardrails are authoritative;
+# this action's `parameters:` below are simply the env vars api_block_ip
+# already reads (api.sh:1060-1065), restated here so a detector's opt-in
+# config can override them per-detector without editing api.sh.
+
+name: perimeter-block
+status: schema-defined   # opt-in capability — schema present, NOT enabled on any shipped detector
+action_type: perimeter_block
+default_for: none        # never a detector default — see header
+opt_in_only: true
+
+description: >
+  Calls tier1-perimeter's api_block_ip (T0b) to add a finding's source IP
+  to the SURU dynamic perimeter-block alias for a bounded TTL. Only
+  invoked for detectors that have explicitly set
+  `actions.perimeter_block: true` in their own Layer 2 config AND whose
+  finding confidence/severity meets confidence_threshold below.
+
+# ---------------------------------------------------------------------------
+# Confidence gate — even on an opted-in detector, perimeter_block only
+# fires above this severity/confidence floor. Findings below the floor
+# fall through to email-default.yml only.
+# ---------------------------------------------------------------------------
+confidence_threshold:
+  min_severity: high   # high | critical — never medium/low; R4 guardrail
+  require_mitre_tagged: true   # finding must carry a resolved TA####/T#### pair
+
+# ---------------------------------------------------------------------------
+# Call target — the exact function this action invokes, restated from
+# api.sh so a future render step (T3) does not have to re-derive it.
+# ---------------------------------------------------------------------------
+call_target:
+  block_function: api_block_ip          # api.sh:1305 — signature: api_block_ip IP [TTL_SECONDS]
+  unblock_function: api_unblock_ip      # api.sh:1350 — signature: api_unblock_ip IP — invoked only by the sweep, not directly by this action
+  sweep_function: api_perimeter_block_expire_sweep   # api.sh:1388 — cron-callable; this action does NOT call it inline
+  source_lib: tier1-perimeter/scripts/lib/api.sh
+  invocation_pattern: >
+    Mirrors the documented crontab invocation at api.sh:1383-1386:
+      source scripts/lib/log.sh; source scripts/lib/api.sh;
+      set -a; source .env; set +a;
+      api_block_ip "${finding.source_ip}" "${ttl_seconds}"
+    Executed from tier1-perimeter (the host with ROUTER_HOST/credentials),
+    triggered by a future T3/T7 webhook or polling bridge — the exact
+    trigger transport (OpenSearch Notifications webhook → a tier1-side
+    listener, vs. a tier1-side poller reading findings) is UNDECIDED and
+    out of T4b's scope; this action config only fixes the call contract.
+
+# ---------------------------------------------------------------------------
+# Parameters — these are exactly the env vars api_block_ip / its guardrail
+# helpers already read (api.sh:1060-1065). Restated here, NOT redefined,
+# so a detector's opt-in can override per-detector without touching
+# tier1-perimeter/.env. Defaults below match api.sh's own `: "${VAR:=...}"`
+# fallbacks verbatim.
+# ---------------------------------------------------------------------------
+parameters:
+  ttl_seconds: "${PERIMETER_BLOCK_DEFAULT_TTL:-3600}"        # api.sh:1061; api_block_ip rejects > PERIMETER_BLOCK_MAX_TTL (api.sh:1317-1318)
+  max_ttl_seconds: "${PERIMETER_BLOCK_MAX_TTL:-86400}"        # api.sh:1062 — upper bound enforced inside api_block_ip, not by this action
+  allowlist: "${PERIMETER_BLOCK_ALLOWLIST:-}"                 # api.sh:1129 — comma-separated IPs/CIDRs; RFC1918/loopback/ROUTER_HOST are a hardcoded floor regardless (api.sh:1122-1127)
+  rate_limit_max_per_window: "${PERIMETER_BLOCK_MAX_PER_WINDOW:-10}"   # api.sh:1063
+  rate_limit_window_seconds: "${PERIMETER_BLOCK_WINDOW_SECONDS:-300}"  # api.sh:1064
+  alias_name: "${PERIMETER_BLOCK_ALIAS:-pfB_SURU_DYNAMIC_v4}"          # api.sh:1060
+
+# ---------------------------------------------------------------------------
+# Audit — api_block_ip already writes a SIEM-bound audit line via
+# _perimeter_block_audit (api.sh:1228-1237, forwarded by the new
+# s_suru_perimeter_block syslog-ng source per that function's own header).
+# This action does not duplicate that audit write; it relies on it.
+# ---------------------------------------------------------------------------
+audit:
+  delegated_to: tier1-perimeter._perimeter_block_audit   # api.sh:1228 — atomic with the mutation call
+  additional_siem_side_audit: >
+    T3/T7 (separate tasks) should also log the OpenSearch-side decision
+    ("detector X opted-in finding Y triggered perimeter_block for IP Z")
+    to suru-* so the SIEM-side trigger and the tier1-side enforcement are
+    both independently auditable — not built in this file; noted as a
+    dependency for whichever task wires the trigger transport.
+
+falsepositives:
+  - A detector's own falsepositives list (e.g. CDN/shared-hosting IPs,
+    DNSSEC long labels) becomes a SELF-DoS risk once perimeter_block is
+    opted in for that detector — this is exactly why R4 requires proving
+    FP rate via email first; this action does not add new FP sources of
+    its own beyond inheriting the opted-in detector's.
+  - Allowlist misconfiguration (PERIMETER_BLOCK_ALLOWLIST omitting a
+    legitimate management/monitoring host) — mitigated by the hardcoded
+    RFC1918/loopback/ROUTER_HOST floor in api.sh, but a public-IP
+    management host (e.g. remote VPN endpoint) is NOT covered by that
+    floor and must be added to PERIMETER_BLOCK_ALLOWLIST explicitly.
+
+mitre_annotation_note: >
+  TA0001 Initial Access mitigation / TA0011 Command and Control disruption
+  — restated verbatim from api.sh's own header (api.sh:1051-1057): this
+  action implements an enforcement response, tagged with the MITRE
+  technique of the INDICATOR being blocked (e.g. T1071 C2, T1190 exploit
+  public-facing), not a technique on the defender's own matrix.
+
+stub_status: >
+  [STUB: alias mutation and reload are marked unconfirmed-live in api.sh
+  (api.sh:1037-1042, 1240-1279, 1282-1294) — needs live pfSense test, per
+  T0b's own notes]. This action config wires to api_block_ip's function
+  interface regardless, per the operator's explicit instruction — the STUB
+  is T0b's open item, not blocking on this file.

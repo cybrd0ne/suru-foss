@@ -1,0 +1,55 @@
+# SURU Platform — Sigma Rule: Port Scan / Host Sweep (Network Recon)
+# MITRE ATT&CK: TA0043 Reconnaissance / T1595.001 (Active Scanning: Scanning IP
+# Blocks), T1046 (Network Service Discovery)
+# Source: Zeek conn.log, normalized to ECS v8 by the tier3-core Logstash Zeek
+# pipeline (event.dataset:"conn"). Detection heuristic operates at the Layer-2
+# detector binding (aggregation over this selection), not in the Sigma
+# selection itself — Sigma here defines the qualifying event population
+# (outbound-originated, short/zero-byte connection attempts), and the
+# OpenSearch detector (Layer 2) applies the per-source distinct-destination
+# cardinality threshold over a time window. This mirrors how Tier 1's
+# `emerging-scan` Suricata category and `SURU_IP_SCAN` pfBlockerNG feed
+# (docs/detection-coverage-map.md §1.1/§1.3) already provide perimeter-level
+# scan detection — this rule is the SIEM-side complement for scan *attempts*
+# that traverse the firewall path Suricata/pfBlockerNG instruments, scoped
+# to the conn-log heuristic the plan's coverage map calls for.
+# Validation: sigma check port-scan-sweep.yml
+references:
+  - https://attack.mitre.org/techniques/T1595/001/
+  - https://attack.mitre.org/techniques/T1046/
+title: SURU - Port Scan or Host Sweep (Zeek conn heuristic)
+id: 9c1d4a2b-0010-4e7f-8a1b-c2d3e4f5a6b7
+status: experimental
+description: |
+  Detects connection attempts characteristic of port scanning or host
+  sweeping: zero/near-zero-byte exchanges across a range of destination
+  ports or hosts from a single source. The Sigma selection below scopes to
+  the qualifying event population (low-byte-count connection attempts);
+  the per-source distinct-destination-port/host cardinality threshold that
+  actually distinguishes "one failed connection" from "a scan" is applied
+  by the binding OpenSearch detector's bucket aggregation (Layer 2), not
+  expressible in a single-event Sigma selection over conn.log.
+author: SURU Detection Engineering / SURU Platform
+date: 2026/06/25
+modified: 2026/06/25
+tags:
+  - attack.ta0043
+  - attack.t1595.001
+  - attack.t1046
+logsource:
+  category: network_connection
+  product: zeek
+  service: conn
+detection:
+  selection:
+    event.dataset: conn
+    source.bytes: 0
+    destination.bytes: 0
+  condition: selection
+falsepositives:
+  - Network/uptime monitoring tools (Nagios, Zabbix, UniFi controller) performing
+    routine TCP-connect health checks across many internal hosts/ports
+  - Client retries against a service that is down (zero-byte connect-reset loop)
+  - Internal vulnerability-scanning tooling (authorized) producing the same
+    zero-byte fan-out pattern — allowlist the scanner host
+level: medium

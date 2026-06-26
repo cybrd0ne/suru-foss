@@ -1,0 +1,53 @@
+# SURU Platform — Layer 3 ECS Field-Mapping Bridge
+# Log type: Zeek conn.log (suru-zeek-* index, event.dataset:"conn")
+# Purpose: maps Sigma-abstract field names (Layer 1) to the concrete ECS v8
+#          field path emitted by this deployment's Logstash Zeek pipeline, for
+#          OpenSearch Security Analytics custom-log-type field-mapping.
+#
+# Sources of truth cross-checked for every ecs_field below:
+#   - `tier2-telemetry/opensearch/field-mappings/README.md` "Zeek network services (suru-zeek-*)"
+#     ("The conn 5-tuple maps to ECS source.ip/source.port/destination.ip/
+#      destination.port/network.transport.")
+#   - tier3-core/config/opensearch/index-templates/suru-ecs-template.json
+#
+# Byte-count fields (source.bytes/destination.bytes) back T4a exfiltration
+# correlation rules (coverage category 4) and are mapped in the ECS template
+# under source/destination — confirmed present.
+
+log_type: suru_zeek_conn
+index_pattern: suru-zeek-*
+description: >
+  Zeek conn.log (5-tuple connection summaries) normalized to ECS v8 by the
+  tier3-core Logstash Zeek pipeline. Filter event.dataset:"conn" to scope to
+  this sub-type within the shared suru-zeek-* index. Primary source for
+  reconnaissance (scan detection) and exfiltration (byte-count) correlation.
+
+mappings:
+  - raw_field: timestamp
+    ecs_field: "@timestamp"
+  - raw_field: event_dataset
+    ecs_field: event.dataset
+  - raw_field: orig_h
+    ecs_field: source.ip
+  - raw_field: orig_p
+    ecs_field: source.port
+  - raw_field: resp_h
+    ecs_field: destination.ip
+  - raw_field: resp_p
+    ecs_field: destination.port
+  - raw_field: proto
+    ecs_field: network.transport
+  - raw_field: orig_bytes
+    ecs_field: source.bytes
+  - raw_field: resp_bytes
+    ecs_field: destination.bytes
+
+  # GeoIP/ASN enrichment (Logstash geoip filter, public IPs only)
+  - raw_field: resp_geo_country_name
+    ecs_field: destination.geo.country_name
+  - raw_field: resp_geo_country_iso_code
+    ecs_field: destination.geo.country_iso_code
+  - raw_field: resp_as_number
+    ecs_field: destination.as.number
+  - raw_field: resp_as_org_name
+    ecs_field: destination.as.organization.name

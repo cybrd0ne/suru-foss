@@ -40,6 +40,22 @@
 #   api_pfsense_install               pfSense ONLY — install pfRest pkg via SSH
 #   api_pfsense_jwt_login             pfSense ONLY — obtain a JWT (called as needed)
 #
+#   api_block_ip IP [TTL_SECONDS]     pfSense ONLY — add IP to the SURU dynamic
+#                                     block alias (PERIMETER_BLOCK_ALIAS), with
+#                                     allowlist/rate-limit/TTL guardrails and SIEM
+#                                     audit. [STUB: alias mutation endpoint
+#                                     unconfirmed — needs live pfSense test]
+#   api_unblock_ip IP                pfSense ONLY — remove IP from the alias,
+#                                     reload, audit. Same [STUB] caveat.
+#   api_perimeter_block_expire_sweep Idempotent cron-callable sweep: unblocks any
+#                                     IP whose TTL has elapsed.
+#
+#   *** NEW ENFORCEMENT SURFACE — NOT WIRED INTO ANY ALWAYS-ON PATH ***
+#   These three functions are library-only. They are not called by deploy.sh,
+#   any cron entry, or any other tier1-perimeter script. Intended caller:
+#   tier2-telemetry's perimeter_block detector action (future T4b work). See
+#   BREAKING CHANGE note at the call site comment block below.
+#
 # VALIDATION HELPERS (pfSense; OPNsense uses different namespaces)
 # ----------------------------------------------------------------------------
 #   api_validate_packages             Verify Suricata/Zeek/pfBlockerNG/RESTAPI installed
@@ -79,6 +95,20 @@
 #     API_TLS_VERIFY                  yes (default) | no
 #     API_CONNECT_TIMEOUT             seconds, default 30
 #     API_MAX_TIME                    seconds, default 60
+#
+#   Dynamic perimeter block (api_block_ip / api_unblock_ip), pfSense only:
+#     PERIMETER_BLOCK_ALIAS            default: pfB_SURU_DYNAMIC_v4
+#     PERIMETER_BLOCK_ALLOWLIST        comma-separated IPs/CIDRs, never blocked
+#     PERIMETER_BLOCK_DEFAULT_TTL      seconds, default 3600 (0 rejected)
+#     PERIMETER_BLOCK_MAX_TTL          seconds, default 86400
+#     PERIMETER_BLOCK_MAX_PER_WINDOW   default 10
+#     PERIMETER_BLOCK_WINDOW_SECONDS   default 300
+#     PERIMETER_BLOCK_STATE_DIR        default ${TMPDIR:-/tmp}/suru-perimeter-block
+#                                       state lives on the CALLING host (this
+#                                       client runs off-router); rate-limit and
+#                                       TTL bookkeeping are therefore scoped per
+#                                       caller, not globally across every host
+#                                       that might invoke this library.
 # =============================================================================
 
 # --- Standalone fallbacks if lib/log.sh is not sourced ----------------------
@@ -979,4 +1009,403 @@ _api_ssh() {
         "${ROUTER_SSH_USER}@${ROUTER_HOST}" \
         "sh -c \"$*\""
   fi
+}
+
+# ===========================================================================
+# DYNAMIC PERIMETER BLOCK — T0b
+#
+# *** BREAKING CHANGE: new Tier-1 enforcement surface ***
+# This is a brand-new capability. It is library-only — nothing in
+# tier1-perimeter calls these functions today. The intended caller is
+# tier2-telemetry's `perimeter_block` detector action (T4b, opt-in per
+# detector, not a default). Do not wire this into deploy.sh, cron, or any
+# always-on path without an explicit, separate change.
+#
+# GROUNDING / GAPS (evidence-based-claims.md):
+#   - No POST/PATCH/PUT pfREST alias-mutation endpoint is confirmed anywhere
+#     in this codebase (grep of every api_request call site in this file
+#     shows only GET /firewall/aliases, read-only). [MISSING REFERENCE:
+#     pfRest /api/v2/firewall/alias mutate-entries schema — propose web
+#     search: "pfRest pfSense API v2 firewall alias update entries endpoint
+#     pfrest.org"]
+#   - Mutation is therefore implemented via the one proven mutation
+#     primitive in this file, `_api_pfsense_exec` (same mechanism
+#     `_api_pfsense_bootstrap_ssh` uses for config_set_path edits, just over
+#     the REST exec endpoint instead of SSH). This is a working code path
+#     (exec is proven elsewhere in this file) but the SPECIFIC php snippet
+#     below has not been run against a live router in this session.
+#   - [STUB: alias mutation endpoint unconfirmed — needs live pfSense test]
+#     applies to every call to _perimeter_block_php_mutate_alias below.
+#   - Reload uses `pfSsh.php exec 'filter_configure();'` — pfSense's standard
+#     programmatic filter-reload call, but not confirmed reachable under the
+#     suru-validator's page-all privilege in a live environment in this
+#     session. [STUB: reload call unconfirmed — needs live pfSense test]
+#   - Audit-to-SIEM: written to a new router-local file
+#     (/var/log/suru/perimeter-block.log) via the same exec call that
+#     performs the mutation, so the audit line and the mutation it describes
+#     are atomic from this client's perspective. A matching syslog-ng source
+#     is added in templates/pfsense/syslog-ng.conf.tpl (see that file) to
+#     forward it over the existing d_siem_tls path — no new transport
+#     invented.
+#
+# MITRE ATT&CK: this capability implements TA0001 Initial Access mitigation /
+# TA0011 Command and Control disruption by blocking a single attacker IP at
+# the perimeter on a SIEM detector's instruction (T1071 Application Layer
+# Protocol C2, T1190 Exploit Public-Facing Application — the IP being
+# blocked is the indicator, not a technique on the defender's own ATT&CK
+# matrix; tag findings that trigger this action with the technique that
+# produced the indicator, not this enforcement action itself).
+# ===========================================================================
+
+: "${PERIMETER_BLOCK_ALIAS:=pfB_SURU_DYNAMIC_v4}"
+: "${PERIMETER_BLOCK_DEFAULT_TTL:=3600}"
+: "${PERIMETER_BLOCK_MAX_TTL:=86400}"
+: "${PERIMETER_BLOCK_MAX_PER_WINDOW:=10}"
+: "${PERIMETER_BLOCK_WINDOW_SECONDS:=300}"
+: "${PERIMETER_BLOCK_STATE_DIR:=${TMPDIR:-/tmp}/suru-perimeter-block}"
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_valid_ipv4 IP — returns 0 if IP is a syntactically valid
+# dotted-quad IPv4 address (each octet 0-255). v6 is out of scope: the
+# managed alias is explicitly named _v4.
+# ---------------------------------------------------------------------------
+_perimeter_block_valid_ipv4() {
+  local ip="$1"
+  local -a octets
+  [[ "${ip}" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  IFS='.' read -r -a octets <<< "${ip}"
+  local o
+  for o in "${octets[@]}"; do
+    (( o >= 0 && o <= 255 )) || return 1
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_ip_in_cidr IP CIDR_OR_IP — pure-bash IPv4 CIDR containment
+# check (no external deps). CIDR_OR_IP without a "/" is treated as /32.
+# ---------------------------------------------------------------------------
+_perimeter_block_ip_in_cidr() {
+  local ip="$1" cidr="$2"
+  local net_part prefix
+  if [[ "${cidr}" == */* ]]; then
+    net_part="${cidr%/*}"
+    prefix="${cidr#*/}"
+  else
+    net_part="${cidr}"
+    prefix=32
+  fi
+  _perimeter_block_valid_ipv4 "${net_part}" || return 1
+  (( prefix >= 0 && prefix <= 32 )) || return 1
+
+  local -a ip_o net_o
+  IFS='.' read -r -a ip_o  <<< "${ip}"
+  IFS='.' read -r -a net_o <<< "${net_part}"
+
+  local ip_int=0 net_int=0 i
+  for i in 0 1 2 3; do
+    ip_int=$(( (ip_int << 8) | ip_o[i] ))
+    net_int=$(( (net_int << 8) | net_o[i] ))
+  done
+
+  local mask=$(( prefix == 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+  (( (ip_int & mask) == (net_int & mask) ))
+}
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_is_allowlisted IP — checks PERIMETER_BLOCK_ALLOWLIST
+# (comma-separated IPs/CIDRs). Fail-safe: if the allowlist is unset/empty,
+# only RFC1918 + loopback + the configured ROUTER_HOST itself are protected
+# as a hardcoded floor — never blockable regardless of allowlist config.
+# ---------------------------------------------------------------------------
+_perimeter_block_is_allowlisted() {
+  local ip="$1" entry
+  local -a floor=(127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16)
+  for entry in "${floor[@]}"; do
+    _perimeter_block_ip_in_cidr "${ip}" "${entry}" && return 0
+  done
+  [[ -n "${ROUTER_HOST:-}" && "${ip}" == "${ROUTER_HOST}" ]] && return 0
+
+  local allowlist="${PERIMETER_BLOCK_ALLOWLIST:-}"
+  [[ -n "${allowlist}" ]] || return 1
+  local -a entries
+  IFS=',' read -r -a entries <<< "${allowlist}"
+  for entry in "${entries[@]}"; do
+    entry="$(echo "${entry}" | tr -d '[:space:]')"
+    [[ -n "${entry}" ]] || continue
+    _perimeter_block_ip_in_cidr "${ip}" "${entry}" && return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_state_init — ensures PERIMETER_BLOCK_STATE_DIR exists with
+# restrictive perms. State lives on the CALLING host (this client runs
+# off-router) — see header comment for the multi-caller-rate-limit caveat.
+# ---------------------------------------------------------------------------
+_perimeter_block_state_init() {
+  if [[ ! -d "${PERIMETER_BLOCK_STATE_DIR}" ]]; then
+    mkdir -p -- "${PERIMETER_BLOCK_STATE_DIR}" || log_die "Cannot create PERIMETER_BLOCK_STATE_DIR=${PERIMETER_BLOCK_STATE_DIR}"
+  fi
+  chmod 700 -- "${PERIMETER_BLOCK_STATE_DIR}" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_rate_limit_check — counts block events recorded in the
+# rate-limit log within PERIMETER_BLOCK_WINDOW_SECONDS. Returns 1 (reject)
+# if PERIMETER_BLOCK_MAX_PER_WINDOW would be exceeded.
+# ---------------------------------------------------------------------------
+_perimeter_block_rate_limit_check() {
+  _perimeter_block_state_init
+  local ratefile="${PERIMETER_BLOCK_STATE_DIR}/rate.log"
+  local now cutoff count
+  now=$(date +%s)
+  cutoff=$(( now - PERIMETER_BLOCK_WINDOW_SECONDS ))
+  touch -- "${ratefile}"
+
+  # Prune + count atomically enough for single-host, single-caller use.
+  # Concurrent multi-process callers on the same host could race here —
+  # acceptable for the SOHO scale this rate limiter targets; not safe for
+  # high-concurrency multi-CI-runner use (see header note on state scope).
+  local tmpfile
+  tmpfile="$(mktemp "${PERIMETER_BLOCK_STATE_DIR}/rate.XXXXXX")" || return 1
+  awk -v cutoff="${cutoff}" '$1 >= cutoff' "${ratefile}" > "${tmpfile}" 2>/dev/null || true
+  mv -f -- "${tmpfile}" "${ratefile}"
+
+  count="$(wc -l < "${ratefile}" | tr -d ' ')"
+  (( count < PERIMETER_BLOCK_MAX_PER_WINDOW ))
+}
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_rate_limit_record — appends a timestamp to the rate log.
+# ---------------------------------------------------------------------------
+_perimeter_block_rate_limit_record() {
+  local ratefile="${PERIMETER_BLOCK_STATE_DIR}/rate.log"
+  echo "$(date +%s)" >> "${ratefile}"
+}
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_ttl_set IP TTL_SECONDS — records expiry epoch for IP.
+# _perimeter_block_ttl_clear IP — removes the TTL record (on unblock).
+# TTL state file format: one "ip expiry_epoch" line per blocked IP.
+# ---------------------------------------------------------------------------
+_perimeter_block_ttl_file() { echo "${PERIMETER_BLOCK_STATE_DIR}/ttl.log"; }
+
+_perimeter_block_ttl_set() {
+  local ip="$1" ttl="$2" ttlfile expiry tmpfile
+  _perimeter_block_state_init
+  ttlfile="$(_perimeter_block_ttl_file)"
+  touch -- "${ttlfile}"
+  expiry=$(( $(date +%s) + ttl ))
+  tmpfile="$(mktemp "${PERIMETER_BLOCK_STATE_DIR}/ttl.XXXXXX")" || return 1
+  awk -v ip="${ip}" '$1 != ip' "${ttlfile}" > "${tmpfile}" 2>/dev/null || true
+  echo "${ip} ${expiry}" >> "${tmpfile}"
+  mv -f -- "${tmpfile}" "${ttlfile}"
+}
+
+_perimeter_block_ttl_clear() {
+  local ip="$1" ttlfile tmpfile
+  _perimeter_block_state_init
+  ttlfile="$(_perimeter_block_ttl_file)"
+  [[ -f "${ttlfile}" ]] || return 0
+  tmpfile="$(mktemp "${PERIMETER_BLOCK_STATE_DIR}/ttl.XXXXXX")" || return 1
+  awk -v ip="${ip}" '$1 != ip' "${ttlfile}" > "${tmpfile}" 2>/dev/null || true
+  mv -f -- "${tmpfile}" "${ttlfile}"
+}
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_audit ACTION IP [DETAIL] — writes one audit line to a
+# router-local file via the proven _api_pfsense_exec primitive, so the audit
+# record and the mutation it describes are emitted from the same exec call's
+# caller (not a separate, possibly-failing round-trip). The file is tailed by
+# a new syslog-ng source (s_suru_perimeter_block, see syslog-ng.conf.tpl) and
+# forwarded over the existing d_siem_tls path — reuses the established
+# forwarding pattern, no new transport.
+#
+# Line format (pipe-delimited, mirrors pfBlockerNG's own log style):
+#   <ISO8601>|<action>|<ip>|<actor>|<detail>
+# ---------------------------------------------------------------------------
+_perimeter_block_audit() {
+  local action="$1" ip="$2" detail="${3:-}"
+  local ts actor esc_detail cmd
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  actor="${API_AUTH_MODE}:${PFSENSE_API_USERNAME:-api_key}"
+  esc_detail="${detail//|/_}"
+  cmd="mkdir -p /var/log/suru && echo '${ts}|${action}|${ip}|${actor}|${esc_detail}' >> /var/log/suru/perimeter-block.log"
+  _api_pfsense_exec "${cmd}" >/dev/null || \
+    log_warn "Audit write to router failed (rc=${_API_EXEC_RC}) for ${action} ${ip} — SIEM will NOT see this event until the router-side log path is fixed."
+}
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_php_mutate_alias ACTION IP — [STUB: alias mutation
+# endpoint unconfirmed — needs live pfSense test]
+#
+# ACTION is "add" or "remove". Mutates PERIMETER_BLOCK_ALIAS's address list
+# via config_set_path, mirroring the proven pattern in
+# _api_pfsense_bootstrap_ssh (which edits system/user and the RESTAPIKey path
+# the same way) — but run over the REST exec endpoint instead of SSH, and not
+# live-tested in this session. Creates the alias if it does not yet exist.
+# ---------------------------------------------------------------------------
+_perimeter_block_php_mutate_alias() {
+  local action="$1" ip="$2"
+  [[ "${action}" == "add" || "${action}" == "remove" ]] \
+    || log_die "_perimeter_block_php_mutate_alias: action must be add|remove"
+
+  # Single-line PHP, kept under the 1024-char _api_pfsense_exec limit.
+  # Uses config_get_path/config_set_path (the same config.lib.inc functions
+  # already proven reachable via this exec path in _api_pfsense_bootstrap_ssh,
+  # albeit there over SSH+php-cli rather than the REST exec endpoint — that
+  # delta is exactly what remains unconfirmed).
+  local php
+  php="require_once('globals.inc');require_once('config.lib.inc');"
+  php+="\$n='${PERIMETER_BLOCK_ALIAS}';\$ip='${ip}';"
+  php+="\$a=config_get_path('aliases/alias',[]);\$idx=null;"
+  php+="foreach(\$a as \$i=>\$x){if((\$x['name']??'')===\$n){\$idx=\$i;break;}}"
+  php+="if(\$idx===null){\$a[]=['name'=>\$n,'type'=>'host','descr'=>'SURU dynamic perimeter block (T0b)','address'=>'','detail'=>''];\$idx=count(\$a)-1;}"
+  php+="\$addrs=\$a[\$idx]['address']===''?[]:explode(' ',\$a[\$idx]['address']);"
+  php+="if('${action}'==='add'){if(!in_array(\$ip,\$addrs,true))\$addrs[]=\$ip;}else{\$addrs=array_values(array_diff(\$addrs,[\$ip]));}"
+  php+="\$a[\$idx]['address']=implode(' ',\$addrs);"
+  php+="config_set_path('aliases/alias',\$a);write_config('SURU perimeter_block: ${action} ${ip}');"
+  php+="echo 'ok';"
+
+  local out
+  out="$(_api_pfsense_exec "php -r \"${php}\"")" || true
+  if (( _API_EXEC_RC != 0 )) || [[ "${out}" != *ok* ]]; then
+    log_error "[STUB] Alias mutation failed or unconfirmed (rc=${_API_EXEC_RC}, action=${action}, ip=${ip})"
+    log_error "[STUB] output: ${out}"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _perimeter_block_reload — [STUB: reload call unconfirmed — needs live
+# pfSense test]. filter_configure() is pfSense's standard programmatic
+# firewall-filter reload; reachability under suru-validator's page-all
+# privilege via the REST exec endpoint has not been confirmed live.
+# ---------------------------------------------------------------------------
+_perimeter_block_reload() {
+  _api_pfsense_exec "pfSsh.php exec 'filter_configure();'" >/dev/null
+  if (( _API_EXEC_RC != 0 )); then
+    log_error "[STUB] Filter reload failed or unconfirmed (rc=${_API_EXEC_RC})"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# api_block_ip IP [TTL_SECONDS] — pfSense ONLY.
+#
+# Guardrails enforced, in order: platform check, IP syntax, allowlist,
+# rate-limit, TTL bound. Only after all pass does mutation happen.
+# Returns 0 on (believed) success, 1 on any guardrail rejection or mutation
+# failure. See header [STUB] notes — success here means "the exec call
+# returned the expected marker," not "live-verified against a real router."
+# ---------------------------------------------------------------------------
+api_block_ip() {
+  local ip="$1" ttl="${2:-${PERIMETER_BLOCK_DEFAULT_TTL}}"
+  api_init
+
+  [[ "${ROUTER_PLATFORM}" == "pfsense" ]] \
+    || log_die "api_block_ip: pfSense only (ROUTER_PLATFORM=${ROUTER_PLATFORM})"
+
+  _perimeter_block_valid_ipv4 "${ip}" \
+    || log_die "api_block_ip: '${ip}' is not a valid IPv4 address"
+
+  [[ "${ttl}" =~ ^[0-9]+$ ]] && (( ttl > 0 )) \
+    || log_die "api_block_ip: TTL must be a positive integer of seconds (got '${ttl}'); permanent blocks (ttl=0) are not allowed without an explicit out-of-band decision"
+  (( ttl <= PERIMETER_BLOCK_MAX_TTL )) \
+    || log_die "api_block_ip: TTL ${ttl}s exceeds PERIMETER_BLOCK_MAX_TTL=${PERIMETER_BLOCK_MAX_TTL}s"
+
+  if _perimeter_block_is_allowlisted "${ip}"; then
+    log_error "api_block_ip: refusing to block ${ip} — allowlisted (RFC1918/loopback/ROUTER_HOST floor or PERIMETER_BLOCK_ALLOWLIST)"
+    return 1
+  fi
+
+  if ! _perimeter_block_rate_limit_check; then
+    log_error "api_block_ip: rate limit exceeded (${PERIMETER_BLOCK_MAX_PER_WINDOW} blocks per ${PERIMETER_BLOCK_WINDOW_SECONDS}s) — refusing to block ${ip}"
+    return 1
+  fi
+
+  log_info "api_block_ip: blocking ${ip} (ttl=${ttl}s, alias=${PERIMETER_BLOCK_ALIAS}) [STUB: unconfirmed live]"
+  if ! _perimeter_block_php_mutate_alias add "${ip}"; then
+    return 1
+  fi
+  if ! _perimeter_block_reload; then
+    log_warn "api_block_ip: alias mutated but reload is unconfirmed — filter may not yet enforce this block"
+  fi
+
+  _perimeter_block_rate_limit_record
+  _perimeter_block_ttl_set "${ip}" "${ttl}"
+  _perimeter_block_audit "block" "${ip}" "ttl=${ttl}s"
+
+  log_info "api_block_ip: ${ip} added to ${PERIMETER_BLOCK_ALIAS}, expires in ${ttl}s [STUB: live enforcement unconfirmed]"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# api_unblock_ip IP — pfSense ONLY. Mirror of api_block_ip's mutation path
+# minus rate-limit/TTL-set; clears TTL state and audits.
+# ---------------------------------------------------------------------------
+api_unblock_ip() {
+  local ip="$1"
+  api_init
+
+  [[ "${ROUTER_PLATFORM}" == "pfsense" ]] \
+    || log_die "api_unblock_ip: pfSense only (ROUTER_PLATFORM=${ROUTER_PLATFORM})"
+
+  _perimeter_block_valid_ipv4 "${ip}" \
+    || log_die "api_unblock_ip: '${ip}' is not a valid IPv4 address"
+
+  log_info "api_unblock_ip: unblocking ${ip} (alias=${PERIMETER_BLOCK_ALIAS}) [STUB: unconfirmed live]"
+  if ! _perimeter_block_php_mutate_alias remove "${ip}"; then
+    return 1
+  fi
+  if ! _perimeter_block_reload; then
+    log_warn "api_unblock_ip: alias mutated but reload is unconfirmed — filter may still be enforcing this block"
+  fi
+
+  _perimeter_block_ttl_clear "${ip}"
+  _perimeter_block_audit "unblock" "${ip}" ""
+
+  log_info "api_unblock_ip: ${ip} removed from ${PERIMETER_BLOCK_ALIAS} [STUB: live enforcement unconfirmed]"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# api_perimeter_block_expire_sweep — idempotent. Reads the local TTL state
+# file and calls api_unblock_ip for every entry whose expiry has passed.
+# Designed to be invoked from cron/systemd timer exactly like the documented
+# pattern in scripts/update-rules.sh — this repo has no cron-registration
+# mechanism, so this ships as a callable function with the suggested
+# crontab line documented here rather than any auto-wiring:
+#
+#   */5 * * * * cd /path/to/tier1-perimeter && \
+#     bash -c 'source scripts/lib/log.sh; source scripts/lib/api.sh; \
+#       set -a; source .env; set +a; api_perimeter_block_expire_sweep' \
+#     >> /var/log/suru-perimeter-block-sweep.log 2>&1
+# ---------------------------------------------------------------------------
+api_perimeter_block_expire_sweep() {
+  api_init
+  _perimeter_block_state_init
+  local ttlfile now
+  ttlfile="$(_perimeter_block_ttl_file)"
+  [[ -f "${ttlfile}" ]] || { log_info "api_perimeter_block_expire_sweep: no TTL state — nothing to do"; return 0; }
+  now=$(date +%s)
+
+  local ip expiry expired_count=0
+  while IFS=' ' read -r ip expiry; do
+    [[ -n "${ip}" && -n "${expiry}" ]] || continue
+    if (( now >= expiry )); then
+      log_info "api_perimeter_block_expire_sweep: ${ip} expired ($(( now - expiry ))s ago) — unblocking"
+      if api_unblock_ip "${ip}"; then
+        (( ++expired_count ))
+      else
+        log_warn "api_perimeter_block_expire_sweep: unblock failed for ${ip} — will retry next sweep"
+      fi
+    fi
+  done < "${ttlfile}"
+
+  log_info "api_perimeter_block_expire_sweep: ${expired_count} IP(s) expired and unblocked"
+  return 0
 }

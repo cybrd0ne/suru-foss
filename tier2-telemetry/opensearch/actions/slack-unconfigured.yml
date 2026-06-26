@@ -1,0 +1,50 @@
+# SURU Platform — Layer 2 Action: Slack (Schema-Present, Unconfigured)
+#
+# Per the feature plan: "every other action type defaults to none/
+# unconfigured — schema supports them, nothing wires them up yet."
+# (tier2-telemetry/opensearch/ tree comment, smooth-weaving-hippo.md line 79:
+# "actions/<slug>.yml  trigger actions: email (default) + perimeter_block
+# (opt-in); slack/webhook schema-present, unconfigured").
+#
+# This file exists so a future task can wire Slack notifications without
+# inventing the schema shape from scratch — it is NOT consumed by any
+# detector today (no detector references action_type: slack), NOT rendered
+# by T3 (render-actions.sh has no slack branch), and NOT provisioned by T7.
+#
+# [MISSING REFERENCE: OpenSearch Notifications plugin `slack` channel
+# config schema (webhook URL registration via
+# _plugins/_notifications/configs) — not present in the references skill —
+# propose web search: "OpenSearch Notifications plugin slack channel
+# config schema webhook url"]
+
+name: slack-unconfigured
+status: unconfigured       # schema-present only — no live wiring, no render-step support
+action_type: slack
+default_for: none
+enabled: false
+
+description: >
+  Placeholder schema for a future Slack notification action. No detector
+  references this action type. No webhook is configured. Do not enable
+  by setting `enabled: true` without first implementing the
+  corresponding render-step support in tier2-telemetry/build/lib/
+  render-actions.sh and the live OpenSearch Notifications `slack` channel
+  config in T7's provisioner — neither exists today.
+
+# ---------------------------------------------------------------------------
+# Parameters below are illustrative of the eventual shape only — values
+# are intentionally placeholder/unset. Do not populate without the
+# render-step support above existing first.
+# ---------------------------------------------------------------------------
+webhook:
+  url: "${SECURITY_ANALYTICS_SLACK_WEBHOOK_URL:-}"   # unset by default; not in any .env.example today
+
+template:
+  message: >
+    [SURU SIEM] {{finding.severity}} — {{detector.name}}
+    ({{finding.mitre_tactic_id}}/{{finding.mitre_technique_id}})
+    source={{finding.source_ip}}
+
+mitre_annotation_note: >
+  Not applicable — this action type is unconfigured/unused; no MITRE
+  tagging logic exists for it.

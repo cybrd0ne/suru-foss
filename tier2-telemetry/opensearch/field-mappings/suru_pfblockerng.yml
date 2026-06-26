@@ -1,0 +1,40 @@
+# SURU Platform — Layer 3 ECS Field-Mapping Bridge
+# Log type: pfBlockerNG DNSBL / IP-reputation blocks (suru-pfblockerng-* index)
+# Purpose: maps Sigma-abstract field names (Layer 1) to the concrete ECS v8
+#          field path emitted by this deployment's Logstash pfBlockerNG
+#          pipeline, for OpenSearch Security Analytics custom-log-type
+#          field-mapping.
+#
+# Sources of truth cross-checked for every ecs_field below:
+#   - `tier2-telemetry/opensearch/field-mappings/README.md` "pfBlockerNG (suru-pfblockerng-*)"
+#   - tier3-core/config/opensearch/index-templates/suru-ecs-template.json
+#
+# Backs coverage categories 2 (initial access), 3 (C2), and the headline
+# 3-finding correlation use case (pfBlockerNG block + Suricata C2 flag + Zeek
+# anomalous DNS from the same host -> one incident).
+
+log_type: suru_pfblockerng
+index_pattern: suru-pfblockerng-*
+description: >
+  pfBlockerNG DNSBL and IP-reputation block events normalized to ECS v8 by the
+  tier3-core Logstash pfBlockerNG pipeline. threat.indicator.* carries the
+  blocked indicator; dns.question.name carries the triggering query when the
+  block was DNS-based.
+
+mappings:
+  - raw_field: timestamp
+    ecs_field: "@timestamp"
+  - raw_field: event_module
+    ecs_field: event.module
+  - raw_field: blocked_indicator
+    ecs_field: threat.indicator.name
+  - raw_field: indicator_type
+    ecs_field: threat.indicator.type
+  - raw_field: feed_name
+    ecs_field: threat.feed.name
+  - raw_field: dns_query_name
+    ecs_field: dns.question.name
+  - raw_field: src_ip
+    ecs_field: source.ip
+  - raw_field: dest_ip
+    ecs_field: destination.ip

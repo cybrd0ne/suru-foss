@@ -34,7 +34,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           fetch-depth: 0
 
@@ -51,6 +51,58 @@ jobs:
           find . \( -name 'docker-compose*.yml' -o -name 'docker-compose*.yaml' \
                  -o -name 'compose.yaml' -o -name 'compose.yml' \) -print0 \
           | xargs -0 -I{} sh -c 'echo "Checking {}"; docker compose -f "{}" config > /dev/null'
+          # Covers tier3-core/datalake/opensearch/compose.yaml (suru.t3.datalake.securityanalytics-init
+          # + suru.t3.datalake.ti-init services, SIEM Security Analytics feature) via the glob above —
+          # no separate invocation needed.
+
+      - name: tier2-telemetry render pipeline tests (test-render.sh)
+        # Covers render.sh --scope tier1 (existing perimeter render, unchanged output contract)
+        # and --scope tier3 (new SIEM Security Analytics render: Sigma/detectors/correlations/
+        # actions/STIX2 -> tier3-core/config/opensearch/security-analytics/, which is gitignored
+        # build output, never committed JSON). yq is self-installed by render.sh with checksum
+        # verification if missing; jq and python3 are preinstalled on ubuntu-24.04 runners.
+        run: |
+          bash tier2-telemetry/build/tests/test-render.sh --verbose
+
+      - name: Sigma rules — required-field / MITRE-tag / ECS-field-path validation (blocking)
+        # Mirrors tier2-telemetry/sigma/README.md "Validation" section exactly:
+        #   1. Deny-list grep for raw EVE / non-ECS field paths — must be zero matches.
+        #   2. YAML + required-field + MITRE tag (TA#### AND T####) + falsepositives sanity,
+        #      via the same checks documented in the README, run from a standalone script
+        #      (not an inline heredoc — embedding a multi-line python3 -c string directly in
+        #      a YAML block scalar is indentation-fragile and breaks YAML parsing).
+        # This is the blocking gate (works without the sigma CLI). `sigma check` itself runs
+        # as a separate best-effort, non-blocking step below — see that step's comment for why.
+        run: |
+          set -euo pipefail
+
+          echo "Deny-list: raw EVE / non-ECS field paths must not appear in canonical Sigma rules"
+          if grep -rnE 'alert\.|suricata\.eve|qtype_name' tier2-telemetry/sigma/rules/; then
+            echo "::error::Raw EVE / non-ECS field path found in tier2-telemetry/sigma/rules/ — see tier2-telemetry/sigma/README.md contract"
+            exit 1
+          fi
+          echo "Deny-list check passed: zero matches."
+
+          echo "YAML + required-field + MITRE-tag + falsepositives validation"
+          bash tier2-telemetry/sigma/validate-sigma-rules.sh
+
+      - name: Sigma rules — sigma-cli structural/schema check (best-effort, non-blocking)
+        # sigma-cli (pip install sigma-cli) was NOT confirmed installable/usable in this CI
+        # environment at authoring time — tier2-telemetry/sigma/README.md "Validation" section
+        # documents this as a known verification gap, not a skipped step, as of 2026-06-24.
+        # [MISSING REFERENCE: sigma-cli PyPI package installability + `sigma check` subcommand
+        # behavior on GitHub Actions ubuntu-24.04 runners — propose web search:
+        # "sigma-cli pip install github actions sigma check command"]
+        # This step attempts the install and check opportunistically; failure here is reported
+        # but does NOT block CI (continue-on-error), so a transient PyPI/environment issue can
+        # never block merges. The blocking gate is the deny-list + python3 step above, which is
+        # confirmed to work without the sigma CLI.
+        if: always()
+        continue-on-error: true
+        run: |
+          pip install --quiet sigma-cli
+          find tier2-telemetry/sigma/rules -name '*.yml' -print0 \
+            | xargs -0 -n1 sigma check
 
   # ────────────────────────────────────────────────────────────
   # 2. Test — go vet / build / test (SEC-083)
@@ -66,7 +118,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Detect Go modules
         id: detect
@@ -103,7 +155,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Detect Go modules
         id: detect
@@ -134,7 +186,7 @@ jobs:
       actions: read            # required by codeql-action/upload-sarif to read workflow run info
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       # ── Trivy filesystem scan (blocking) ───────────────────
       # Pinned to ed142fd0673e97e23eac54620cfb913e5ce36c25 = v0.36.0
@@ -152,7 +204,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload Trivy FS results
-        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
+        uses: github/codeql-action/upload-sarif@1b549b9259bda1cb5ddde3b41741a82a2d15a841  # v3.28.13
         if: always()
         continue-on-error: true   # non-fatal: repo may not have code scanning enabled
         with:

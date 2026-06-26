@@ -1,0 +1,122 @@
+# SURU Platform — Layer 2 Action: Email (Default)
+#
+# This is the DEFAULT trigger action for every Layer 2 detector
+# (tier2-telemetry/opensearch/detectors/*.yml `actions.default: email`).
+# Every detector in this repo today sets `default: email` — see e.g.
+# c2-dns-tunneling-entropy.yml:60, exfiltration-large-transfer.yml:58,
+# defense-evasion-tls-anomaly.yml:64, initial-access-exploit-public-facing.yml:62,
+# reconnaissance-port-scan.yml:80. The stub detector
+# (execution-persistence.stub.yml:124) explicitly sets `default: null` as a
+# placeholder, with a comment stating email is the intended default once
+# buildable — consistent with this file.
+#
+# This file is schema/config for T3's render step (tier2-telemetry/build/
+# lib/render-actions.sh, not yet built) to turn into an OpenSearch
+# Notifications-plugin `config` (channel type `email`) + a Security
+# Analytics detector `trigger.actions[]` entry referencing it by name. The
+# exact `_plugins/_notifications/configs` and
+# `_plugins/_security_analytics/detectors` request/response shapes are
+# UNVERIFIED against the live OpenSearch 3.7.0 instance — that live
+# verification is explicitly T0a's job (deferred to the Executor stage,
+# operator-gated, ungated by this file). This file does not assume or
+# encode wire-format request bodies; it is the source-of-truth config that
+# a future render step will translate.
+#
+# [MISSING REFERENCE: OpenSearch Notifications plugin `email` channel config
+# schema (SMTP account vs. SES vs. ses_account) and Security Analytics
+# trigger.actions[] binding shape — not present in the references skill
+# (only the generic https://opensearch.org/docs/latest/ entry is listed,
+# no Notifications-plugin-specific page) — propose web search: "OpenSearch
+# Notifications plugin email channel config API smtp_account
+# _plugins/_notifications/configs"]
+#
+# SMTP/outbound-mail path: no SMTP relay or mail-sending capability exists
+# anywhere in this codebase today (grepped tier1-perimeter/.env.example,
+# tier3-core/.env.example, and tier2-telemetry — the only existing email-
+# adjacent vars are unrelated (tier1's zeekctl mail_to is a router-local
+# sendmail target unrelated to OpenSearch). This action's SMTP_* variables
+# are therefore NEW — added to tier3-core/.env.example (tier3 owns the
+# OpenSearch Notifications plugin's SMTP account config, since OpenSearch
+# itself is a tier3-core service) in this same change.
+
+name: email-default
+status: schema-defined   # not yet rendered/provisioned — render step (T3) and live wiring (T7) are separate, later tasks
+action_type: email
+default_for: all_detectors   # every Layer 2 detector that does not override actions.default
+
+description: >
+  Default trigger action for all Security Analytics findings. Sends an
+  email summarizing the finding to the configured operator recipient
+  list. This is the proving ground for false-positive rates before any
+  detector is opted into perimeter_block (see perimeter-block.yml header).
+
+# ---------------------------------------------------------------------------
+# Recipients — env-var templated, never hardcoded. Rendered by T3's
+# render-actions.sh into the OpenSearch Notifications recipient list.
+# ---------------------------------------------------------------------------
+recipients:
+  to: "${SECURITY_ANALYTICS_ALERT_EMAIL_TO}"      # comma-separated list, required
+  cc: "${SECURITY_ANALYTICS_ALERT_EMAIL_CC:-}"     # optional, comma-separated, may be empty
+
+# ---------------------------------------------------------------------------
+# SMTP transport — Notifications plugin's `email` channel needs either a
+# configured SMTP account/sender, or an SES account. SURU targets SMTP
+# (self-hosted-first, no cloud dependency per local-first principle (see INSTALL.md)). All values env-var templated; no secrets in this file.
+# ---------------------------------------------------------------------------
+smtp:
+  sender_name: "SURU SIEM"
+  sender_address: "${SECURITY_ANALYTICS_SMTP_FROM}"
+  host: "${SECURITY_ANALYTICS_SMTP_HOST}"
+  port: "${SECURITY_ANALYTICS_SMTP_PORT:-587}"
+  method: "${SECURITY_ANALYTICS_SMTP_METHOD:-start_tls}"   # none | ssl | start_tls
+  # Credentials are NEVER inlined here — Notifications plugin SMTP auth
+  # (when method != none) reads from OpenSearch keystore
+  # (plugins.notifications.smtp.username / .password), set at provision
+  # time by T7's apply-security-analytics.sh from
+  # SECURITY_ANALYTICS_SMTP_USERNAME / SECURITY_ANALYTICS_SMTP_PASSWORD —
+  # not embedded in this rendered config.
+
+# ---------------------------------------------------------------------------
+# Message template — references finding fields. Exact Mustache/template
+# variable names are UNCONFIRMED against the live Security Analytics finding
+# schema (T0a gap, same as the wire-format note above) — these are the
+# logical fields T3's render step must resolve, not a verified template
+# syntax.
+# ---------------------------------------------------------------------------
+template:
+  subject: >
+    [SURU SIEM] {{finding.severity}} — {{detector.name}}
+    ({{finding.mitre_tactic_id}}/{{finding.mitre_technique_id}})
+  body: >
+    Detector:        {{detector.name}}
+    Severity:        {{finding.severity}}
+    MITRE Tactic:    {{finding.mitre_tactic_id}} {{finding.mitre_tactic_name}}
+    MITRE Technique: {{finding.mitre_technique_id}} {{finding.mitre_technique_name}}
+    Source IP:       {{finding.source_ip}}
+    Destination IP:  {{finding.destination_ip}}
+    Timestamp:        {{finding.timestamp}}
+    Index:           {{finding.index}}
+
+    Finding produced by SURU OpenSearch Security Analytics.
+    Review in the Security Analytics Findings dashboard before deciding
+    whether this detector is a perimeter_block candidate
+    (tier2-telemetry/opensearch/actions/perimeter-block.yml).
+
+# ---------------------------------------------------------------------------
+# Severity-based throttle — avoids an alert storm during a noisy first
+# rollout while a detector's FP rate is still being characterized.
+# Low-severity findings are batched; high/critical send immediately.
+# Exact Security Analytics "per_execution" vs. "per_alert" throttle
+# semantics are also part of the T0a verification gap above.
+# ---------------------------------------------------------------------------
+throttle:
+  high: { mode: immediate }
+  critical: { mode: immediate }
+  medium: { mode: immediate }
+  low: { mode: batched, window_minutes: 30 }
+
+mitre_annotation_note: >
+  This action does not itself map to a MITRE technique (it is a
+  notification mechanism, not detection/response logic) — the MITRE
+  TA/T tags surfaced in the email body are pulled from the triggering
+  detector/finding, not asserted by this action config.
