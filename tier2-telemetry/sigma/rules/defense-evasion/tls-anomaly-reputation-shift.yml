@@ -1,0 +1,64 @@
+# SURU Platform — Sigma Rule: TLS Anomaly / Threat-Reputation Shift (Defense Evasion)
+# MITRE ATT&CK: TA0005 Defense Evasion / T1573 (Encrypted Channel),
+# T1036 (Masquerading — invalid/self-signed cert presented as legitimate)
+# Source: Zeek notice.log (event.dataset:"notice", event.kind:"alert") for
+# TLS-relevant Zeek-native detections, normalized to ECS v8 by the tier3-core
+# Logstash Zeek pipeline. Per `tier2-telemetry/opensearch/field-mappings/README.md`
+# ("Notice vs. weird"), only notice.log carries event.kind:"alert" — this
+# rule intentionally selects only the notice-framework TLS findings actually
+# emitted by this deployment's loaded scripts
+# (policy/protocols/ssl/validate-certs, loaded by suru-base.zeek), not a
+# speculative weird.log name. Read evidence:
+#   tier2-telemetry/zeek/scripts/suru-base.zeek:29 `@load policy/protocols/ssl/validate-certs`
+# This built-in Zeek policy script raises Notice::Type values from the
+# X509::Cert_Validate / SSL::Invalid_Server_Cert family of the Zeek
+# notice framework when a server presents an invalid/expired/self-signed
+# certificate — a common defense-evasion technique to blend C2 traffic into
+# normal-looking TLS. rule.name (mapped from notice_note in
+# suru_zeek_ssl.yml) carries the Zeek notice type string; this rule matches
+# on the substring "Invalid_Server_Cert" rather than a hardcoded full
+# module path, since the exact notice type string emitted by
+# validate-certs.zeek in this Zeek version has not been independently
+# captured from a live notice.log line (logged as an evidence gap below).
+# [MISSING REFERENCE: live notice.log sample showing the exact Notice::Type
+# string raised by policy/protocols/ssl/validate-certs in this deployment's
+# Zeek version — propose: tail /var/log/zeek/notice.log on the router after
+# Zeek observes a self-signed/invalid cert, or grep the Zeek source tree for
+# the validate-certs.zeek script's `NOTICE()` calls.]
+# Validation: sigma check tls-anomaly-reputation-shift.yml
+references:
+  - https://attack.mitre.org/techniques/T1573/
+  - https://attack.mitre.org/techniques/T1036/
+title: SURU - TLS Certificate Anomaly (Defense Evasion)
+id: be3f6c4d-0012-4a9b-8c3d-e4f5a6b7c8d9
+status: experimental
+description: |
+  Detects Zeek notice-framework findings for invalid/self-signed/expired TLS
+  certificates on outbound connections, raised by
+  policy/protocols/ssl/validate-certs (loaded transitively via
+  suru-base.zeek). Threat actors frequently present invalid or self-signed
+  certificates on C2 infrastructure, or downgrade/strip TLS to evade
+  perimeter inspection. This is a notice-log (alert-kind) selection, not a
+  raw ssl.log selection, per the ECS canon's notice-vs-weird distinction.
+author: SURU Detection Engineering / SURU Platform
+date: 2026/06/25
+modified: 2026/06/25
+tags:
+  - attack.ta0005
+  - attack.t1573
+  - attack.t1036
+logsource:
+  category: notice
+  product: zeek
+detection:
+  selection:
+    event.dataset: notice
+    event.kind: alert
+    rule.name|contains: 'Invalid_Server_Cert'
+  condition: selection
+falsepositives:
+  - Internally self-signed certs for LAN-only admin UIs (router, NAS, hypervisor
+    management) reached via a path Zeek also observes egress-side
+  - Expired certs on low-traffic internal/dev services not yet renewed
+  - Captive-portal or guest-network TLS interception appliances
+level: medium

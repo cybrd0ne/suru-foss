@@ -1,0 +1,50 @@
+# SURU Platform — Threat-Intel Source Registry
+# SOURCE OF TRUTH for tier2-telemetry/threat-intel/ — the single shared IOC
+# origin list consumed by BOTH planes:
+#   - Perimeter (Tier 1): existing pfBlockerNG render path
+#     (tier2-telemetry/build/lib/render-pfblockerng.sh) — unchanged by this file.
+#   - SIEM (Tier 3): tier2-telemetry/build/lib/render-stix2.sh normalises
+#     these sources into STIX2 bundles under tier2-telemetry/threat-intel/stix2/
+#     (build/runtime artifacts — see stix2/README.md), which
+#     tier3-core/scripts/apply-threat-intel.sh then pushes into OpenSearch
+#     Security Analytics' threat-intel-source ingestion.
+#
+# The sources below are the live tier2 IOC origins. Bootstrap derived from:
+#   - tier2-telemetry/pfblockerng/categories/ip-reputation.yml — IPv4 CIDR
+#     reputation feeds, already rendered to pfSense via render-pfblockerng.sh.
+#
+# Schema per entry:
+#   name            — stable feed identifier (matches pfBlockerNG aliasname)
+#   status          — live | not-live  (live = actively rendered into a
+#                      running consumer today; not-live = listed, unconfirmed)
+#   origin          — which existing tier2 file this entry is bootstrapped from
+#   source          — feed URL
+#   source_format   — native format of the feed at `source` (CIDR / hosts)
+#   ioc_types       — list of: ipv4 | domain | hash | url
+#   update_cadence  — how often the source itself publishes updates
+#   mitre           — MITRE ATT&CK Technique IDs (carried over from origin file)
+#   description      — one-line description
+#   note            — optional caveat (e.g. requires API key)
+---
+sources:
+  # --- Bootstrapped from pfblockerng/categories/ip-reputation.yml (live, Tier 1) ---
+  - name: SURU_Emerging_Threats_IP
+    status: live
+    origin: tier2-telemetry/pfblockerng/categories/ip-reputation.yml
+    source: "https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt"
+    source_format: CIDR
+    ioc_types: [ipv4]
+    update_cadence: Daily
+    mitre: [T1071, T1583]
+    description: "Emerging Threats known-bad IP ranges"
+
+  - name: SURU_Abuse_IPDB
+    status: live
+    origin: tier2-telemetry/pfblockerng/categories/ip-reputation.yml
+    source: "https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=90"
+    source_format: CIDR
+    ioc_types: [ipv4]
+    update_cadence: Daily
+    mitre: [T1071, T1110]
+    description: "AbuseIPDB high-confidence IPs (requires API key)"
+    note: "Disabled by default — enable + configure API key before activating"

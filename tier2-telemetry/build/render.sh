@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
 # =============================================================================
-# SURU Platform — T2 → T1 Render Orchestrator
-# Merges tier2-telemetry security intelligence with tier1-perimeter templates.
-# Output: tier1-perimeter/rendered/<platform>/
+# SURU Platform — Tier 2 Render Master Dispatcher
+# Thin parametrized entry point over two render scopes:
+#   tier1 — perimeter render (Suricata/pfBlockerNG/Zeek -> tier1-perimeter/rendered/)
+#   tier3 — SIEM Security Analytics render (Layers 1-3 + STIX2 ->
+#           tier3-core/config/opensearch/security-analytics/)
 #
-# Usage: ./render.sh [--platform pfsense|opnsense|all] [--dry-run] [--verbose]
+# BACKWARD COMPATIBILITY: the pre-existing `--platform pfsense|opnsense|all`
+# flag (consumed by tier1-perimeter/Makefile's `render`/`deploy` targets and
+# build/tests/test-render.sh) is UNCHANGED. The new `--scope tier1|tier3|all`
+# flag defaults to `tier1` — today's only existing scope — so every existing
+# caller (Makefile, test suite, CI) gets byte-identical behavior with zero
+# changes required on their part. Opt into the new tier3 render path with
+# `--scope tier3` or `--scope all`.
+#
+# Usage:
+#   ./render.sh [--scope tier1|tier3|all] [--platform pfsense|opnsense|all] \
+#               [--dry-run] [--verbose]
 # =============================================================================
 set -euo pipefail
 
@@ -12,11 +24,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.."; pwd)"
 T1_DIR="${REPO_ROOT}/tier1-perimeter"
 T2_DIR="${REPO_ROOT}/tier2-telemetry"
+T3_DIR="${REPO_ROOT}/tier3-core"
 LIB_DIR="${SCRIPT_DIR}/lib"
 
 DRY_RUN=false
 VERBOSE=false
 PLATFORM="all"
+SCOPE="tier1"
 
 trap '_render_cleanup' EXIT
 _render_cleanup() { : ; }
@@ -119,12 +133,18 @@ _ensure_yq
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --scope)    SCOPE="$2";    shift 2 ;;
     --platform) PLATFORM="$2"; shift 2 ;;
     --dry-run)  DRY_RUN=true;  shift ;;
     --verbose)  VERBOSE=true;  shift ;;
     *)          _die "Unknown argument: $1" ;;
   esac
 done
+
+case "${SCOPE}" in
+  tier1|tier3|all) ;;
+  *) _die "Unknown scope: ${SCOPE}. Valid: tier1, tier3, all" ;;
+esac
 
 PLATFORMS=()
 case "${PLATFORM}" in
@@ -135,40 +155,33 @@ case "${PLATFORM}" in
 esac
 
 # ---------------------------------------------------------------------------
-# Render loop
-# Each renderer is sourced and called inside a function to contain
-# any residual set -e interactions from arithmetic in library scripts.
+# _run_renderer: source a render library inside this function scope and
+# invoke the named function. Containing the source here (rather than at
+# top level) isolates any residual `set -e` interactions from arithmetic in
+# library scripts, matching the pre-refactor behavior exactly.
 # ---------------------------------------------------------------------------
 _run_renderer() {
   local lib="$1"; shift
-  # Source the library inside this function scope
   # shellcheck disable=SC1090
   source "${lib}"
-  # Call the renderer function (first arg is function name, rest are args)
   local fn="$1"; shift
   "${fn}" "$@"
 }
 
-for PLAT in "${PLATFORMS[@]}"; do
-  RENDERED_DIR="${T1_DIR}/rendered/${PLAT}"
-  _log "Rendering for platform: ${PLAT} -> ${RENDERED_DIR}"
-  if [[ "${DRY_RUN}" != "true" ]]; then
-    mkdir -p "${RENDERED_DIR}/suricata"
-    mkdir -p "${RENDERED_DIR}/zeek"
-    mkdir -p "${RENDERED_DIR}/pfblockerng"
-  fi
+# ---------------------------------------------------------------------------
+# Tier 1 — perimeter render (existing behavior, unchanged output)
+# ---------------------------------------------------------------------------
+if [[ "${SCOPE}" == "tier1" || "${SCOPE}" == "all" ]]; then
+  for PLAT in "${PLATFORMS[@]}"; do
+    _run_renderer "${LIB_DIR}/render-tier1.sh" \
+      render_tier1 "${PLAT}" "${T1_DIR}" "${T2_DIR}" "${LIB_DIR}" "${DRY_RUN}"
+  done
+fi
 
-  _vlog "Rendering Suricata..."
-  _run_renderer "${LIB_DIR}/render-suricata.sh" \
-    render_suricata "${PLAT}" "${T1_DIR}" "${T2_DIR}" "${RENDERED_DIR}" "${DRY_RUN}"
-
-  _vlog "Rendering pfBlockerNG..."
-  _run_renderer "${LIB_DIR}/render-pfblockerng.sh" \
-    render_pfblockerng "${PLAT}" "${T2_DIR}" "${RENDERED_DIR}" "${DRY_RUN}"
-
-  _vlog "Rendering Zeek..."
-  _run_renderer "${LIB_DIR}/render-zeek.sh" \
-    render_zeek "${PLAT}" "${T1_DIR}" "${T2_DIR}" "${RENDERED_DIR}" "${DRY_RUN}"
-
-  _log "Render complete for ${PLAT}."
-done
+# ---------------------------------------------------------------------------
+# Tier 3 — SIEM Security Analytics render (new)
+# ---------------------------------------------------------------------------
+if [[ "${SCOPE}" == "tier3" || "${SCOPE}" == "all" ]]; then
+  _run_renderer "${LIB_DIR}/render-tier3.sh" \
+    render_tier3 "${T2_DIR}" "${T3_DIR}" "${LIB_DIR}" "${DRY_RUN}"
+fi

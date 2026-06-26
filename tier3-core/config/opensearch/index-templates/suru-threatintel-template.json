@@ -1,0 +1,114 @@
+# ECS v8 index template for suru-threatintel-* indices — the SIEM-side IOC
+# index populated from tier2-telemetry's STIX2 threat-intel bundles via
+# tier3-core/scripts/apply-threat-intel.sh / OpenSearch Security Analytics'
+# threat-intel-source ingestion.
+#
+# Reuses the `threat.indicator.{name,type,confidence}` / `threat.feed.name`
+# shape already defined in suru-ecs-template.json (see that file's §"threat"
+# block and its README.md table row) — no new field names are invented here.
+# This template ADDS the indicator-lifecycle fields STIX2 bundles carry
+# (first_seen/last_seen, the STIX2 pattern itself, and the originating
+# sources.yml entry name) that the base suru-ecs-template.json's minimal
+# threat.* block does not cover, since that block was sized for inline
+# pfBlockerNG/Suricata threat-match enrichment, not a dedicated IOC index.
+#
+# Priority 110 (> base suru-ecs-template.json's 100) so this template's
+# threat.* shape — once both templates are eligible to match — does not lose
+# a composition conflict to the base ECS template on the suru-threatintel-*
+# index pattern. Per the base template's README.md "Adding a New Index
+# Pattern" guidance (REQ-015).
+#
+# PUT /_index_template/suru-threatintel-template
+
+PUT /_index_template/suru-threatintel-template
+{
+  "index_patterns": ["suru-threatintel-*"],
+  "priority": 110,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.refresh_interval": "30s",
+      "index.codec": "best_compression",
+      "index.mapping.ignore_malformed": true,
+      "index.mapping.total_fields.limit": 500
+    },
+    "mappings": {
+      "dynamic_templates": [
+        {
+          "strings_as_keyword": {
+            "match_mapping_type": "string",
+            "mapping": { "type": "keyword", "ignore_above": 1024 }
+          }
+        }
+      ],
+      "properties": {
+        "@timestamp": { "type": "date" },
+
+        "threat": {
+          "properties": {
+            "indicator": {
+              "properties": {
+                "name":          { "type": "keyword" },
+                "type":          { "type": "keyword" },
+                "confidence":    { "type": "keyword" },
+                "ip":            { "type": "ip" },
+                "url": {
+                  "properties": {
+                    "domain":    { "type": "keyword" },
+                    "full":      { "type": "keyword" }
+                  }
+                },
+                "file": {
+                  "properties": {
+                    "hash": {
+                      "properties": {
+                        "md5":    { "type": "keyword" },
+                        "sha1":   { "type": "keyword" },
+                        "sha256": { "type": "keyword" }
+                      }
+                    }
+                  }
+                },
+                "first_seen":    { "type": "date" },
+                "last_seen":     { "type": "date" },
+                "marking":       { "type": "keyword" }
+              }
+            },
+            "feed": {
+              "properties": {
+                "name":          { "type": "keyword" },
+                "reference":     { "type": "keyword" }
+              }
+            },
+            "software": {
+              "properties": {
+                "id":            { "type": "keyword" },
+                "name":          { "type": "keyword" }
+              }
+            }
+          }
+        },
+
+        "event": {
+          "properties": {
+            "module":          { "type": "keyword" },
+            "dataset":         { "type": "keyword" },
+            "kind":            { "type": "keyword" },
+            "category":        { "type": "keyword" },
+            "ingested":        { "type": "date" },
+            "created":         { "type": "date" }
+          }
+        },
+
+        "_suru": {
+          "properties": {
+            "log_type":        { "type": "keyword" },
+            "tier":            { "type": "keyword" },
+            "ti_source_name":  { "type": "keyword" }
+          }
+        }
+      }
+    }
+  }
+}

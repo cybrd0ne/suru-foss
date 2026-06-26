@@ -1,0 +1,103 @@
+# SURU Platform — Layer 3 ECS Field-Mapping Bridge
+# Log type: suru_endpoint (FUTURE endpoint execution/persistence telemetry)
+#
+# [STUB: endpoint telemetry not yet ingested into OpenSearch — EDR-agent->OpenSearch
+# path; future agent wire-up; no live index exists today]
+#
+# This file is a PLACEHOLDER/SCAFFOLD for a future "execution & persistence" log type
+# (process creation, file integrity, system modification events) sourced from a EDR agent
+# Agent -> OpenSearch pipeline that does not exist yet. `tier2-telemetry/edr-agent/` (see CONTRIBUTING.md)
+# today contains only `ossec.conf.template` — a deploy-time config template, not a
+# wired data source. There is no EDR Manager, no EDR agent-to-OpenSearch output plugin,
+# and no `suru-endpoint-*` index in the running OpenSearch cluster (confirmed by
+# reading tier2-telemetry/edr-agent/ — only file present is ossec.conf.template).
+#
+# Per CONTRIBUTING.md, every ecs_field below is
+# UNCONFIRMED/ASPIRATIONAL, unlike the sibling suru_suricata.yml / suru_zeek_*.yml /
+# suru_pfsense_fw.yml / suru_pfblockerng.yml files in this directory, which are
+# cross-checked against `tier2-telemetry/opensearch/field-mappings/README.md` and
+# tier3-core/config/opensearch/index-templates/suru-ecs-template.json (live ECS
+# canon for sources that ARE ingested today). This file has NO such cross-check
+# available because no live alert payload exists to read.
+#
+#   - `raw_field` is a GUESS at EDR agent/Sysmon-style alert JSON shape (sysmon
+#     EventID 1 process-create style naming convention) — NOT read from any
+#     live EDR agent alert payload.
+#   - `ecs_field` is a standard ECS v8 core field name (process.*, file.*,
+#     registry.*, event.*) chosen for plausibility — NOT validated against
+#     suru-ecs-template.json (those mappings do not exist there yet).
+#
+# Do NOT use this file as ECS-field ground truth for any other tier2/tier3 work.
+# Do NOT reference this file from a non-stub detector, correlation, or dashboard —
+# only tier2-telemetry/opensearch/detectors/execution-persistence.stub.yml may
+# reference it, and that file is itself excluded from T3's render pass by its
+# `.stub.yml` suffix.
+#
+# Future agent — before promoting any mapping out of stub status:
+#   1. Confirm a real EDR agent -> OpenSearch pipeline exists and
+#      a `suru-endpoint-*` (or whatever it ends up named) index is populated.
+#   2. Read a live alert/event JSON payload from that pipeline — do not guess.
+#   3. Rewrite every raw_field below against the confirmed payload shape.
+#   4. Add the corresponding ecs_field mappings to
+#      tier3-core/config/opensearch/index-templates/suru-ecs-template.json.
+#   5. Cross-check against tier3-core/docs/security-analytics.md (T0a output)
+#      for the actual OpenSearch Security Analytics custom-log-type schema.
+#
+# Validation status: NOT validated against a live index. NOT run through
+# `sigma check`. This file exists only to give the execution-persistence.stub.yml
+# detector skeleton a field-mapping target to reference.
+
+log_type: suru_endpoint
+index_pattern: suru-endpoint-*   # PLACEHOLDER — unconfirmed naming, no live index exists
+description: >
+  PLACEHOLDER field-mapping bridge for future endpoint execution/persistence
+  telemetry (process creation, file integrity monitoring, system modification,
+  registry/autostart changes). Source: future EDR agent -> OpenSearch path.
+  No live data source exists today — see header.
+
+mappings:
+  # Process creation (T1059, T1053-style execution events) — UNCONFIRMED
+  - raw_field: process_name                # PLACEHOLDER — guessed EDR agent/Sysmon field path
+    ecs_field: process.name
+  - raw_field: process_command_line
+    ecs_field: process.command_line
+  - raw_field: process_pid
+    ecs_field: process.pid
+  - raw_field: process_executable
+    ecs_field: process.executable
+  - raw_field: process_hash_sha256
+    ecs_field: process.hash.sha256
+  - raw_field: process_parent_name
+    ecs_field: process.parent.name
+  - raw_field: process_parent_command_line
+    ecs_field: process.parent.command_line
+
+  # File integrity monitoring — UNCONFIRMED
+  - raw_field: file_path
+    ecs_field: file.path
+  - raw_field: file_name
+    ecs_field: file.name
+  - raw_field: file_extension
+    ecs_field: file.extension
+  - raw_field: file_hash_sha256
+    ecs_field: file.hash.sha256
+
+  # Registry / autostart persistence (T1547, T1543-style events) — UNCONFIRMED
+  - raw_field: registry_path
+    ecs_field: registry.path
+  - raw_field: registry_value
+    ecs_field: registry.value
+
+  # Envelope / universal fields — UNCONFIRMED
+  - raw_field: user_name
+    ecs_field: user.name
+  - raw_field: host_name
+    ecs_field: host.name
+  - raw_field: event_action
+    ecs_field: event.action
+  - raw_field: event_category
+    ecs_field: event.category
+  - raw_field: event_module
+    ecs_field: event.module
+  - raw_field: timestamp
+    ecs_field: "@timestamp"

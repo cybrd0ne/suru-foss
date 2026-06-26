@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # SURU Platform — Render pipeline integration test
-# Runs render.sh --dry-run for all platforms and validates output structure.
+# Covers both dispatcher scopes:
+#   render.sh --scope tier1 (default, existing perimeter render — unchanged)
+#   render.sh --scope tier3 (new SIEM Security Analytics render)
 # Usage: ./test-render.sh [--verbose]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.."; pwd)"
 RENDER="${SCRIPT_DIR}/../render.sh"
+LIB_DIR="${SCRIPT_DIR}/../lib"
 
 VERBOSE=false
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=true
@@ -26,13 +29,23 @@ $VERBOSE && _verbose_flag=(--verbose)
 echo "[test-render] Test 1: render.sh executable"
 [[ -x "${RENDER}" ]] && _pass "render.sh is executable" || _fail "render.sh missing or not executable"
 
-# Test 2: dry-run completes without error for all platforms
-echo "[test-render] Test 2: dry-run all platforms"
+# Test 2: dry-run completes without error for all platforms (no --scope flag —
+# exercises the default scope, which MUST remain tier1 for backward compat)
+echo "[test-render] Test 2: dry-run all platforms (default scope)"
 if bash "${RENDER}" --dry-run --platform all ${_verbose_flag[@]+"${_verbose_flag[@]}"} 2>&1; then
   _pass "dry-run completed"
 else
   _fail "dry-run failed"
 fi
+
+# Test 2b: default scope output is identical to explicit --scope tier1 output
+# (the BACKWARD COMPATIBILITY contract render.sh's header comment asserts).
+echo "[test-render] Test 2b: default scope == explicit --scope tier1"
+default_out="$(bash "${RENDER}" --dry-run --platform all 2>&1)"
+explicit_out="$(bash "${RENDER}" --dry-run --platform all --scope tier1 2>&1)"
+[[ "${default_out}" == "${explicit_out}" ]] \
+  && _pass "default scope output matches --scope tier1 output" \
+  || _fail "default scope output DIFFERS from --scope tier1 output (backward-compat break)"
 
 # Test 3: template files exist
 # Note: pfblockerng.xml.tpl was removed — render-pfblockerng.sh emits a
@@ -78,6 +91,81 @@ sec001_payload="$(_php_esc "'];system('id');#")"
 [[ "$sec001_payload" != *"'"* || "$sec001_payload" == *"\\'"* ]] \
   && [[ "$sec001_payload" == $'\\\'];system(\\\'id\\\');#' ]] \
   && _pass "injection payload neutralised" || _fail "injection payload NOT neutralised: $sec001_payload"
+
+# Test 6: render.sh --scope tier3 --dry-run completes without error
+echo "[test-render] Test 6: dry-run --scope tier3"
+if bash "${RENDER}" --dry-run --scope tier3 ${_verbose_flag[@]+"${_verbose_flag[@]}"} 2>&1; then
+  _pass "tier3 dry-run completed"
+else
+  _fail "tier3 dry-run failed"
+fi
+
+# Test 7: tier3 live (non-dry-run) render produces the expected output
+# directory structure under a scratch copy of the repo tree, without
+# touching the real tier3-core/config/opensearch/security-analytics/ path.
+# Mirrors render_tier3's own mkdir layout (sigma/, detectors/,
+# correlation-rules/, actions/).
+echo "[test-render] Test 7: tier3 render output directory structure"
+T3_SCRATCH="$(mktemp -d)"
+trap '[[ -n "${T3_SCRATCH:-}" ]] && rm -rf "${T3_SCRATCH}"' EXIT
+
+(
+  set -euo pipefail
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/render-tier3.sh"
+  _log()  { :; }
+  _vlog() { :; }
+  _warn() { :; }
+  _die()  { echo "$*" >&2; exit 1; }
+  _run_renderer() {
+    local lib="$1"; shift
+    # shellcheck disable=SC1090
+    source "${lib}"
+    local fn="$1"; shift
+    "${fn}" "$@"
+  }
+  render_tier3 "${REPO_ROOT}/tier2-telemetry" "${T3_SCRATCH}" "${LIB_DIR}" "false"
+)
+
+t3_out="${T3_SCRATCH}/config/opensearch/security-analytics"
+for d in sigma detectors correlation-rules actions; do
+  [[ -d "${t3_out}/${d}" ]] && _pass "tier3 output dir exists: ${d}/" || _fail "missing tier3 output dir: ${d}/"
+done
+[[ -f "${t3_out}/sigma/manifest.json" ]] \
+  && _pass "sigma manifest.json rendered" || _fail "sigma manifest.json missing"
+
+# Test 8: *.stub.* files are correctly skipped — never rendered into tier3 output
+echo "[test-render] Test 8: *.stub.* skip convention enforced"
+if [[ -f "${t3_out}/detectors/execution-persistence.stub.json" ]]; then
+  _fail "stub detector was rendered (must be skipped): execution-persistence.stub.json"
+else
+  _pass "stub detector correctly skipped: execution-persistence.stub.yml"
+fi
+if [[ -f "${t3_out}/correlation-rules/endpoint-execution-c2.stub.json" ]]; then
+  _fail "stub correlation rule was rendered (must be skipped): endpoint-execution-c2.stub.json"
+else
+  _pass "stub correlation rule correctly skipped: endpoint-execution-c2.stub.yml"
+fi
+
+# Test 9: every rendered detector/correlation/action JSON is valid JSON and
+# carries the pending-T0a schema_verified:false marker (no fabricated-as-
+# confirmed schema per evidence-based-claims.md).
+echo "[test-render] Test 9: rendered JSON validity + schema_verified:false marker"
+rendered_json_count=0
+for f in "${t3_out}"/detectors/*.json "${t3_out}"/correlation-rules/*.json "${t3_out}"/actions/*.json; do
+  [[ -f "${f}" ]] || continue
+  rendered_json_count=$((rendered_json_count + 1))
+  if ! jq -e . "${f}" > /dev/null 2>&1; then
+    _fail "invalid JSON: $(basename "${f}")"
+    continue
+  fi
+  if jq -e '._render_meta.schema_verified == false' "${f}" > /dev/null 2>&1; then
+    _pass "valid JSON + schema_verified:false marker: $(basename "${f}")"
+  else
+    _fail "missing/incorrect _render_meta.schema_verified marker: $(basename "${f}")"
+  fi
+done
+[[ "${rendered_json_count}" -gt 0 ]] || _fail "no rendered JSON files found to validate"
 
 echo ""
 echo "[test-render] Results: ${PASS} passed, ${FAIL} failed"

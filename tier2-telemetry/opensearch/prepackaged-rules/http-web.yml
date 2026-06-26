@@ -1,0 +1,45 @@
+# SURU — Pre-packaged Security Analytics Rules: HTTP web log type
+#
+# Source index : suru-zeek-* (event.dataset:"http") + suru-suricata-* (event.dataset:"alert")
+# SA category  : others_web
+# Detector name: suru-prepackaged-http-web
+# Field mapping: SA alias bridges c-uri→http.url, sc-status→http.status (see field-mappings/)
+#
+# Toggle: set enabled: true/false. Never edit rule_id or query content.
+# Apply : build/render.sh --scope tier3  &&  apply-security-analytics.sh
+
+category: others_web
+index_pattern: suru-zeek-*
+detector_name: suru-prepackaged-http-web
+detector_type: others_web
+field_mapping_aliases:
+  # SA field → SURU ECS field (registered via _plugins/_security_analytics/mappings)
+  c-uri: http.url
+  sc-status: http.status
+  cs-method: http.http_method
+  cs-host: http.hostname
+
+rules:
+  - rule_id: "7745c2ea-24a5-4290-b680-04359cb84b35"
+    title: "Path Traversal Exploitation Attempts"
+    enabled: true
+    level: medium
+    field_available: true      # c-uri → http.url alias will be registered
+    log_source: zeek_http
+    mitre:
+      tactics:
+        - id: TA0001
+          name: "Initial Access"
+      techniques:
+        - id: T1190
+          name: "Exploit Public-Facing Application"
+    tier1_boundary: additive
+    rationale: >
+      Catches ../../../etc/passwd, windows/ and other generic path traversal patterns
+      against any HTTP service on the LAN (NAS, router admin UI, media server).
+      Generic pattern applicable to any HTTP-enabled service — not product-specific.
+      Complements Tier-1 emerging-web_server (disabled by default) by running at the
+      SIEM layer without requiring Suricata http decoder in inline-IPS mode.
+    falsepositives:
+      - "Legitimate security scanners (Nikto, OpenVAS) running from an authorized host — allowlist scanner IP"
+      - "Automated vulnerability scans from a pentest"

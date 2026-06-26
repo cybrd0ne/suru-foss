@@ -53,5 +53,10 @@ __pycache__/
 Thumbs.db
 desktop.ini
 
+# Generated / local state (user-specific, not for repo)
+memory/
+
 # Generated / rendered output
 tier1-perimeter/rendered/
+tier2-telemetry/threat-intel/stix2/*.json
+tier3-core/config/opensearch/security-analytics/

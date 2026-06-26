@@ -1,0 +1,48 @@
+# SURU Platform — Layer 3 ECS Field-Mapping Bridge
+# Log type: Zeek dns.log (suru-zeek-* index, event.dataset:"dns")
+# Purpose: maps Sigma-abstract field names (Layer 1) to the concrete ECS v8
+#          field path emitted by this deployment's Logstash Zeek pipeline, for
+#          OpenSearch Security Analytics custom-log-type field-mapping.
+#
+# Sources of truth cross-checked for every ecs_field below:
+#   - `tier2-telemetry/opensearch/field-mappings/README.md` "Zeek network services (suru-zeek-*)"
+#   - tier3-core/config/opensearch/index-templates/suru-ecs-template.json
+#
+# Source.ip/destination.ip semantics for this log type per §4: client / resolver.
+
+log_type: suru_zeek_dns
+index_pattern: suru-zeek-*
+description: >
+  Zeek dns.log normalized to ECS v8 by the tier3-core Logstash Zeek pipeline.
+  Filter event.dataset:"dns" to scope to this sub-type within the shared
+  suru-zeek-* index.
+
+mappings:
+  - raw_field: timestamp
+    ecs_field: "@timestamp"
+  - raw_field: event_dataset
+    ecs_field: event.dataset
+  - raw_field: client_ip
+    ecs_field: source.ip
+  - raw_field: resolver_ip
+    ecs_field: destination.ip
+  - raw_field: query
+    ecs_field: dns.question.name
+  - raw_field: qtype_name
+    ecs_field: dns.question.type
+  - raw_field: qclass_name
+    ecs_field: dns.question.class
+  - raw_field: rcode_name
+    ecs_field: dns.response_code
+  - raw_field: answers
+    ecs_field: dns.resolved
+
+  # GeoIP/ASN enrichment (Logstash geoip filter, public IPs only)
+  - raw_field: client_geo_country_name
+    ecs_field: source.geo.country_name
+  - raw_field: client_geo_country_iso_code
+    ecs_field: source.geo.country_iso_code
+  - raw_field: client_as_number
+    ecs_field: source.as.number
+  - raw_field: client_as_org_name
+    ecs_field: source.as.organization.name

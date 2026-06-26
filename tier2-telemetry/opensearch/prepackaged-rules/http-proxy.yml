@@ -1,0 +1,224 @@
+# SURU — Pre-packaged Security Analytics Rules: HTTP proxy/C2 log type
+#
+# Source index : suru-suricata-* (http.http_user_agent confirmed present)
+# SA category  : others_proxy
+# Detector name: suru-prepackaged-http-proxy
+# Field mapping: SA alias bridges c-useragent→http.http_user_agent, c-uri→http.url,
+#                cs-host→http.hostname, cs-method→http.http_method,
+#                r-dns→dns.question.name (for download-by-TLD rule)
+#
+# Toggle: set enabled: true/false. Never edit rule_id or query content.
+# Apply : build/render.sh --scope tier3  &&  apply-security-analytics.sh
+
+category: others_proxy
+index_pattern: suru-suricata-*
+detector_name: suru-prepackaged-http-proxy
+detector_type: others_proxy
+field_mapping_aliases:
+  # SA field → SURU ECS field (registered via _plugins/_security_analytics/mappings)
+  c-useragent: http.http_user_agent
+  c-uri: http.url
+  cs-host: http.hostname
+  cs-method: http.http_method
+  r-dns: dns.question.name         # approximation for b5de2919 (dyndns/TLD download rule)
+
+rules:
+  - rule_id: "5c84856b-55a5-45f1-826f-13f37250cf4e"
+    title: "Malware User Agent"
+    enabled: true
+    level: high
+    field_available: true      # c-useragent → http.http_user_agent in suricata index
+    log_source: suricata_http
+    mitre:
+      tactics:
+        - id: TA0011
+          name: "Command and Control"
+      techniques:
+        - id: T1071.001
+          name: "Application Layer Protocol: Web Protocols"
+    tier1_boundary: additive
+    rationale: >
+      Known malware User-Agent strings (hardcoded in malware HTTP C2 implementations).
+      High precision — these exact UA strings don't appear in legitimate browsers.
+      Complements Suricata C2-beacon SID 9990001 (interval-based) with UA-identity detection.
+    falsepositives:
+      - "Legacy embedded devices or automation software using outdated UA strings"
+
+  - rule_id: "6ec820f2-e963-4801-9127-d8b2dce4d31b"
+    title: "APT User Agent"
+    enabled: true
+    level: high
+    field_available: true
+    log_source: suricata_http
+    mitre:
+      tactics:
+        - id: TA0011
+          name: "Command and Control"
+      techniques:
+        - id: T1071.001
+          name: "Application Layer Protocol: Web Protocols"
+    tier1_boundary: additive
+    rationale: >
+      APT tool User-Agent strings (SJZJ, specific APT family UA fingerprints).
+      Near-zero FP — these UA strings are unique to specific APT tools.
+    falsepositives:
+      - "Virtually none"
+
+  - rule_id: "fdd1bfb5-f60b-4a35-910e-f36ed3d0b32f"
+    title: "Exploit Framework User Agent"
+    enabled: true
+    level: high
+    field_available: true
+    log_source: suricata_http
+    mitre:
+      tactics:
+        - id: TA0011
+          name: "Command and Control"
+      techniques:
+        - id: T1071.001
+          name: "Application Layer Protocol: Web Protocols"
+    tier1_boundary: additive
+    rationale: >
+      Metasploit, Cobalt Strike, and similar framework default User-Agents.
+      Complements Suricata emerging-exploit category (rule-based) with UA fingerprinting.
+    falsepositives:
+      - "Authorized pentester running Metasploit on the LAN — allowlist the pentest host"
+
+  - rule_id: "41b42a36-f62c-4c34-bd40-8cb804a34ad8"
+    title: "CobaltStrike Malformed UAs in Malleable Profiles"
+    enabled: true
+    level: critical
+    field_available: true
+    log_source: suricata_http
+    mitre:
+      tactics:
+        - id: TA0011
+          name: "Command and Control"
+      techniques:
+        - id: T1071.001
+          name: "Application Layer Protocol: Web Protocols"
+    tier1_boundary: additive
+    rationale: >
+      Malformed User-Agent strings specific to CobaltStrike Malleable C2 profiles —
+      syntactically invalid UAs that no legitimate browser or library sends.
+      Very high signal, very low FP.
+    falsepositives:
+      - "Virtually none — malformed UA strings are always anomalous"
+
+  - rule_id: "953b895e-5cc9-454b-b183-7f3db555452e"
+    title: "CobaltStrike Malleable Amazon Browsing Traffic Profile"
+    enabled: true
+    level: high
+    field_available: true
+    log_source: suricata_http
+    mitre:
+      tactics:
+        - id: TA0011
+          name: "Command and Control"
+      techniques:
+        - id: T1071.001
+          name: "Application Layer Protocol: Web Protocols"
+    tier1_boundary: additive
+    rationale: >
+      Cobalt Strike Malleable C2 profile impersonating Amazon browsing traffic.
+      Specific UA + URI + host-header combination fingerprints this C2 profile.
+    falsepositives:
+      - "Legitimate Amazon shopping browsing from the LAN — UA pattern is matched against the specific
+        Cobalt Strike Amazon template which differs subtly from real Amazon UAs"
+
+  - rule_id: "37325383-740a-403d-b1a2-b2b4ab7992e7"
+    title: "CobaltStrike Malleable (OCSP) Profile"
+    enabled: true
+    level: high
+    field_available: true
+    log_source: suricata_http
+    mitre:
+      tactics:
+        - id: TA0011
+          name: "Command and Control"
+      techniques:
+        - id: T1071.001
+          name: "Application Layer Protocol: Web Protocols"
+    tier1_boundary: additive
+    rationale: >
+      Cobalt Strike Malleable C2 profile impersonating OCSP traffic to ocsp.verisign.com.
+      c-uri:/ocsp/* to that specific host is a known C2 profile fingerprint.
+    falsepositives:
+      - "Legitimate certificate OCSP checks — however the specific URI pattern /ocsp/* combined
+        with the Cobalt Strike host fingerprint is high-precision"
+
+  - rule_id: "e09aed7a-09e0-4c9a-90dd-f0d52507347e"
+    title: "Windows WebDAV User Agent"
+    enabled: true
+    level: high
+    field_available: true
+    log_source: suricata_http
+    mitre:
+      tactics:
+        - id: TA0011
+          name: "Command and Control"
+      techniques:
+        - id: T1071.001
+          name: "Application Layer Protocol: Web Protocols"
+    tier1_boundary: additive
+    rationale: >
+      Microsoft-WebDAV-MiniRedir UA used in LOLBIN file downloads via WebDAV —
+      a known lateral-movement and payload-staging technique. Legitimate WebDAV from
+      Windows hosts is rare in SOHO; this typically indicates abuse.
+    falsepositives:
+      - "Windows hosts with mapped WebDAV drives to a legitimate cloud storage service"
+      - "Office Online / SharePoint integration in a home-office context"
+
+  - rule_id: "8ccd35a2-1c7c-468b-b568-ac6cdf80eec3"
+    title: "Bitsadmin to Uncommon IP Server Address"
+    enabled: true
+    level: high
+    field_available: true
+    log_source: suricata_http
+    mitre:
+      tactics:
+        - id: TA0011
+          name: "Command and Control"
+        - id: TA0005
+          name: "Defense Evasion"
+      techniques:
+        - id: T1071.001
+          name: "Application Layer Protocol: Web Protocols"
+        - id: T1197
+          name: "BITS Jobs"
+    tier1_boundary: additive
+    rationale: >
+      Microsoft BITS (Background Intelligent Transfer Service) UA downloading from a
+      raw IP address (not a hostname) — a common malware staging indicator.
+      Legitimate BITS transfers go to named CDN/Windows Update endpoints, not bare IPs.
+    falsepositives:
+      - "Windows Update or SCCM downloading from a private/internal IP-addressed update server"
+
+  - rule_id: "b5de2919-b74a-4805-91a7-5049accbaefe"
+    title: "Download EXE from Suspicious TLD"
+    enabled: true
+    level: low
+    field_available: false     # c-uri-extension NOT in suricata index; r-dns approx as dns.question.name
+    field_mapping_note: >
+      Rule queries c-uri-extension (file extension extracted from URI) and r-dns (resolved DNS).
+      Suricata index has http.url (full URL, not extension-only) and dns.question.name.
+      c-uri-extension has no direct ECS equivalent — SA alias mapping r-dns→dns.question.name
+      covers the DNS leg but the extension match won't fire precisely. Rule enabled with this
+      limitation documented; a false-negative on the extension match is expected.
+    log_source: suricata_http
+    mitre:
+      tactics:
+        - id: TA0001
+          name: "Initial Access"
+      techniques:
+        - id: T1566
+          name: "Phishing"
+        - id: T1203
+          name: "Exploitation for Client Execution"
+    tier1_boundary: additive
+    rationale: >
+      Executable downloads from suspicious TLDs (.xyz, .top, .club etc.) — a malware
+      distribution indicator. Best-effort with our data: the DNS resolution leg (r-dns TLD)
+      will match via dns.question.name; the file-extension leg will be limited.
+    falsepositives:
+      - "Legitimate software downloads from vendors using new gTLDs"

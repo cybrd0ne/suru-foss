@@ -1,0 +1,100 @@
+# SURU Platform — Layer 2 Detector: Reconnaissance / Port Scan & Host Sweep
+# Binds Layer-1 Sigma rule:
+#   tier2-telemetry/sigma/rules/reconnaissance/port-scan-sweep.yml [T1595.001, T1046]
+# to the suru_zeek_conn (Layer 3) field-mapping / suru-zeek-* index pattern.
+#
+# Coverage map category: 1 (Reconnaissance) — docs/detection-coverage-map.md §2
+#
+# Tier 1 boundary: Tier 1 already provides perimeter-level scan detection via
+# Suricata's `emerging-scan` category and pfBlockerNG's `SURU_IP_SCAN` (DShield)
+# feed (docs/detection-coverage-map.md §1.1/§1.3, read 2026-06-24). This
+# detector's exclusion predicate de-dups against both so the SIEM does not
+# re-alert in isolation on a scan source the perimeter already blocked —
+# per the plan's "Tier 1 <-> SIEM boundary" section and
+# CONTRIBUTING.md (exclusion fields cited, not assumed).
+#
+# Cardinality note: Sigma selects the qualifying zero-byte-connection event
+# population; the per-source distinct-destination-port/host threshold that
+# distinguishes "one failed connection" from "a scan" is applied here, in the
+# detector's own aggregation/threshold config (bucket_value/threshold below),
+# since OpenSearch Security Analytics detectors apply per-document rule
+# matches plus a finding-level aggregation, not a Sigma-internal aggregation.
+#
+# Verification: static (YAML/field validation) passed this session. Live
+# detection confirmation (inject a known-matching scan event burst, confirm a
+# finding) is NOT YET RUN — T0a/T7 (plugin endpoint verification, provisioner)
+# have not executed against a live OpenSearch 3.7.0 instance as of this
+# artifact's authoring. Per CONTRIBUTING.md, this
+# detector's static validity and its live-fire behavior are independent
+# checks — only the former is confirmed here.
+
+name: reconnaissance-port-scan
+status: buildable
+buildable: true
+owner_tier: tier2-telemetry
+index_pattern: suru-zeek-*
+log_type: suru_zeek_conn
+field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_zeek_conn.yml
+
+sigma_rules:
+  - ref: tier2-telemetry/sigma/rules/reconnaissance/port-scan-sweep.yml
+    id: 9c1d4a2b-0010-4e7f-8a1b-c2d3e4f5a6b7
+
+mitre:
+  tactics:
+    - id: TA0043
+      name: Reconnaissance
+  techniques:
+    - id: T1595.001
+      name: "Active Scanning: Scanning IP Blocks"
+    - id: T1046
+      name: Network Service Discovery
+
+detection_filter:
+  # Mirrors the Sigma selection: qualifying event population is zero-byte
+  # connection attempts (event.dataset:"conn", source.bytes:0, destination.bytes:0).
+  query: 'event.dataset:"conn" AND source.bytes:0 AND destination.bytes:0'
+  aggregation:
+    group_by: source.ip
+    metric: cardinality(destination.port)
+    # Seed threshold — flagged for per-environment tuning before promoting
+    # from email-only to perimeter_block (see actions: below).
+    threshold: 15
+    window_minutes: 5
+
+schedule:
+  period_minutes: 5
+
+exclusion_predicates:
+  # Tier 1 <-> SIEM de-dup contract (plan "Tier 1 <-> SIEM boundary"):
+  # do not re-alert in isolation on a source already blocked at the perimeter
+  # for the same scan activity.
+  - description: pfSense firewall already blocked this source
+    query: 'NOT event.action:"block"'
+  - description: Suricata inline IPS already dropped this source (emerging-scan)
+    query: 'NOT event.action:"blocked"'
+  - description: pfBlockerNG SURU_IP_SCAN feed already flagged this indicator
+    query: 'NOT threat.indicator.type:*'
+
+actions:
+  default: email
+  perimeter_block: false   # opt-in only, per plan — not enabled until FP rate is proven via email alerts
+
+falsepositives:
+  - Network/uptime monitoring tools (Nagios, Zabbix, UniFi controller) performing
+    routine TCP-connect health checks across many internal hosts/ports
+  - Authorized internal vulnerability-scanning tooling producing the same
+    zero-byte fan-out pattern — allowlist the scanner host source.ip
+  - Client retry storms against a down service (not a scan, but matches the
+    zero-byte selection) — the destination-port cardinality threshold above
+    is intended to filter this (a retry loop hits one port repeatedly, not many)
+
+verification:
+  static: passed   # YAML schema + ECS field-existence checks, this session
+  live_detection_confirmed: false
+  rationale: >
+    T0a (live SA plugin/endpoint verification) and T7 (provisioner) have not
+    run against a live OpenSearch 3.7.0 instance. Per the plan's Verification
+    section, static import success is necessary but not sufficient — a
+    known-matching scan-burst event set must be injected and a finding
+    confirmed before this detector is considered live-verified.

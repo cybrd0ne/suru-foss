@@ -1,0 +1,131 @@
+# [STUB: endpoint telemetry not yet ingested into OpenSearch — EDR-agent->OpenSearch path; future agent wire-up; no live index exists today]
+#
+# SURU Platform — Layer 2 Correlation Rule Skeleton: UC2 Endpoint
+# Execution+C2 Chain (TA0002 Execution -> TA0011 Command and Control)
+#
+# This is a SKELETON, not a deployable correlation rule. It joins two
+# stub-only signals:
+#   1. process-creation (TA0002, T1059 Command and Scripting Interpreter) —
+#      sourced from tier2-telemetry/opensearch/detectors/execution-persistence.stub.yml
+#   2. outbound-to-known-bad-IOC (TA0011, T1071) — the threat-intel/STIX2 IOC
+#      match leg, which itself depends on T5 (shared threat-intel path) being
+#      live AND the endpoint having egress visibility, neither of which
+#      exists today for endpoint-sourced traffic.
+#
+# Naming contract: the `.stub.yml` suffix is INTENTIONAL and load-bearing,
+# matching T1c's convention (execution-persistence.stub.yml) and the task
+# instruction to use this suffix so T3's render step (a separate task) can
+# glob-exclude `*.stub.*` and never provision this into a live OpenSearch
+# cluster by accident.
+#
+# Per CONTRIBUTING.md: the `index_pattern` below
+# (`suru-endpoint-*`) is the SAME unconfirmed placeholder used in
+# execution-persistence.stub.yml — not a name read from any live index.
+#
+# Future agent — before promoting any rule out of this stub file:
+#   1. Confirm execution-persistence.stub.yml has been promoted to a real,
+#      non-stub detector (its own future-agent steps 1-5 completed) — this
+#      correlation's leg 1 has no meaning until that detector is real.
+#   2. Confirm T5 (threat-intel STIX2 path) has a live OpenSearch
+#      threat-intel-source ingested and IOC-match findings are actually
+#      produced against endpoint-sourced network connection events.
+#   3. Confirm an endpoint-sourced network-connection event (process ->
+#      outbound IP) actually carries both a process.* identity AND a
+#      destination.ip suitable for IOC matching in the SAME document or a
+#      joinable document — EDR agent's actual event schema must be read, not
+#      assumed, before this join's `join.key` can be finalized.
+#   4. Inject a known-matching test event pair and confirm a live finding
+#      before marking this correlation done
+#      (CONTRIBUTING.md; plan-level Risk R2/R3).
+#
+# Status: stub-only, future-agent extension. No live wiring. No assumption
+# that any endpoint telemetry index currently exists in OpenSearch.
+
+name: endpoint-execution-c2-stub
+status: stub
+buildable: false
+owner_tier: tier2-telemetry
+
+join:
+  key: host.id   # PLACEHOLDER — endpoint correlation should join on the
+                  # endpoint's own identity (host.id/agent.id), not source.ip,
+                  # since process-creation and outbound-connection events on
+                  # the SAME endpoint may both report the endpoint's own IP
+                  # inconsistently depending on EDR agent's actual event shape
+                  # (unconfirmed — see future-agent step 3 above).
+  window_minutes: null   # PLACEHOLDER — not tuned, no live data to tune against
+  window_rationale: >
+    PLACEHOLDER. A real window cannot be chosen without observing real
+    process-creation-to-outbound-connection latency on live endpoint
+    telemetry, which does not exist yet.
+
+legs:
+  - id: process-creation
+    description: >
+      PLACEHOLDER. Sourced from
+      tier2-telemetry/opensearch/detectors/execution-persistence.stub.yml's
+      T1059 technique skeleton (Command and Scripting Interpreter) — itself
+      not a working detector, see that file's header.
+    index_pattern: suru-endpoint-*   # PLACEHOLDER — unconfirmed naming, no live index exists
+    field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_endpoint.yml
+    query: null   # PLACEHOLDER — no real selection logic; see execution-persistence.stub.yml's selection_sketch
+    join_field: host.id   # PLACEHOLDER, unconfirmed
+    mitre:
+      tactics:
+        - id: TA0002
+          name: Execution
+      techniques:
+        - id: T1059
+          name: Command and Scripting Interpreter
+
+  - id: outbound-known-bad-ioc
+    description: >
+      PLACEHOLDER. Outbound connection from the endpoint to a destination
+      matched against the tier2 threat-intel/STIX2 IOC source (T5) — not
+      live; T5's OpenSearch native STIX2 threat-intel-source ingestion has
+      not been confirmed to exist or to be queryable as a per-event match
+      against endpoint-sourced connection events.
+    index_pattern: suru-endpoint-*   # PLACEHOLDER — unconfirmed naming, no live index exists
+    field_mapping_ref: tier2-telemetry/opensearch/field-mappings/suru_endpoint.yml
+    query: null   # PLACEHOLDER — depends on T5's live IOC-match finding shape, unverified
+    join_field: host.id   # PLACEHOLDER, unconfirmed
+    mitre:
+      tactics:
+        - id: TA0011
+          name: Command and Control
+      techniques:
+        - id: T1071
+          name: Application Layer Protocol
+
+mitre:
+  tactics:
+    - id: TA0002
+      name: Execution
+    - id: TA0011
+      name: Command and Control
+  techniques:
+    - id: T1059
+      name: Command and Scripting Interpreter
+    - id: T1071
+      name: Application Layer Protocol
+
+schedule:
+  period_minutes: null   # PLACEHOLDER — not scheduled, correlation is not deployable
+
+actions:
+  default: null   # PLACEHOLDER — no action wired; per plan, email is the default once buildable
+
+falsepositives:
+  - PLACEHOLDER — cannot be assessed without live endpoint telemetry to
+    observe real benign process->outbound-IOC-adjacent patterns (e.g.
+    legitimate software auto-update reaching a CDN IP later added to a
+    reputation feed).
+
+verification:
+  static: not_run   # YAML schema/field validation intentionally skipped — this is a non-deployable stub, see header
+  live_detection_confirmed: false
+  rationale: >
+    Per task instructions: do not attempt any live OpenSearch calls, do not
+    assume any index exists. This file is excluded from T3's render step by
+    the `.stub.yml` naming convention and must never be imported into a live
+    OpenSearch cluster.

@@ -128,20 +128,20 @@ services:
 
         echo '[config-init] Seeding opensearch config volume...'
 
-        cp /src/opensearch.yml /config/opensearch.yml
+        cp -f /src/opensearch.yml /config/opensearch.yml
 
         mkdir -p /config/index-templates
-        cp -r /src/index-templates/. /config/index-templates/
+        cp -rf /src/index-templates/. /config/index-templates/
 
         mkdir -p /config/ism-policies
-        cp -r /src/ism-policies/. /config/ism-policies/
+        cp -rf /src/ism-policies/. /config/ism-policies/
 
         mkdir -p /config/certs
-        cp /src/certs/node.pem      /config/certs/node.pem
-        cp /src/certs/node-key.pem  /config/certs/node-key.pem
-        cp /src/certs/root-ca.pem   /config/certs/root-ca.pem
-        cp /src/certs/admin.pem     /config/certs/admin.pem
-        cp /src/certs/admin-key.pem /config/certs/admin-key.pem
+        cp -f /src/certs/node.pem      /config/certs/node.pem
+        cp -f /src/certs/node-key.pem  /config/certs/node-key.pem
+        cp -f /src/certs/root-ca.pem   /config/certs/root-ca.pem
+        cp -f /src/certs/admin.pem     /config/certs/admin.pem
+        cp -f /src/certs/admin-key.pem /config/certs/admin-key.pem
 
         chown -R 1000:1000 /config
 
@@ -182,7 +182,7 @@ services:
 
   # ── OpenSearch Node ──────────────────────────────────────────────────────────
   suru.t3.datalake.opensearch:
-    image: opensearchproject/opensearch:2.19.5@sha256:e225ca1a828ef054e0335a0c234198a7b8f80abcc90f1159273ca7be5d8bbdff
+    image: opensearchproject/opensearch:3.7.0@sha256:123e6591a47b1d54686890551bdb35739c85193ecded381219fc9e059e18128f
     container_name: suru.t3.datalake.opensearch
     hostname: suru-t3-datalake-opensearch
     <<: [*restart-unless-stopped, *platform-default]
@@ -212,7 +212,11 @@ services:
       plugins.security.ssl.transport.pemkey_filepath: certs/node-key.pem
       plugins.security.ssl.transport.pemtrustedcas_filepath: certs/root-ca.pem
       plugins.security.ssl.transport.enforce_hostname_verification: "false"
-      plugins.security.allow_default_init_securityindex: "true"
+      # SEC-076: must be "false" — security index is seeded exclusively by
+      # security-init, never by an automatic default-init bootstrap. See the
+      # SEC-076 comment in config/opensearch/opensearch.yml (authoritative
+      # on-disk setting) before changing this back to "true".
+      plugins.security.allow_default_init_securityindex: "false"
       path.repo: /usr/share/opensearch/snapshots
     ulimits:
       memlock:
@@ -237,9 +241,22 @@ services:
       # Accept only 200. This probe authenticates with the admin password, so a
       # 401 means the credentials are wrong — the node must NOT report healthy in
       # that case (dependent services gate on service_healthy and would otherwise
-      # start against a mis-credentialed cluster). The default security index is
-      # initialised on first boot, so admin creds return 200 before security-init
-      # runs; there is no chicken-and-egg with the security bootstrap.
+      # start against a mis-credentialed cluster).
+      #
+      # The security index is seeded EXCLUSIVELY by suru.t3.datalake.security-init
+      # (see that service below) — there is no automatic default-init bootstrap
+      # (plugins.security.allow_default_init_securityindex is "false", per SEC-076
+      # in config/opensearch/opensearch.yml). On a fresh bootstrap this healthcheck
+      # CANNOT pass until security-init has run: DISABLE_INSTALL_DEMO_CONFIG=true
+      # disables the image's only password-substitution mechanism, so the security
+      # index initially seeds with the image's bundled default credential hash, not
+      # OPENSEARCH_INITIAL_ADMIN_PASSWORD. security-init itself does not need this
+      # healthcheck to pass first — securityadmin.sh authenticates via the admin
+      # mTLS client cert, not the REST password. deploy.sh's
+      # repair_security_credentials_if_needed() breaks this deadlock by
+      # force-running security-init (--no-deps) BEFORE wait_healthy is called on
+      # this service — see that function for the full mechanism, which now covers
+      # fresh bootstrap as well as drift against a surviving volume.
       test:
         - CMD-SHELL
         - >
@@ -261,7 +278,7 @@ services:
 
   # ── Security Init ─────────────────────────────────────────────────────────────
   suru.t3.datalake.security-init:
-    image: opensearchproject/opensearch:2.19.5@sha256:e225ca1a828ef054e0335a0c234198a7b8f80abcc90f1159273ca7be5d8bbdff
+    image: opensearchproject/opensearch:3.7.0@sha256:123e6591a47b1d54686890551bdb35739c85193ecded381219fc9e059e18128f
     container_name: suru.t3.datalake.security-init
     <<: *platform-default
     restart: "no"
@@ -272,6 +289,27 @@ services:
       - ALL
     tmpfs:
       - /tmp:size=64m,mode=1777
+    # CAUTION — known deadlock, occurs on BOTH a fresh bootstrap and drift
+    # against a surviving volume: (a) fresh bootstrap — DISABLE_INSTALL_DEMO_CONFIG
+    # =true disables the image's password-substitution mechanism, so a brand-new
+    # opensearch-data volume seeds the security index with the image's bundled
+    # default credential hash, not OPENSEARCH_INITIAL_ADMIN_PASSWORD; (b) drift —
+    # .env's OPENSEARCH_INITIAL_ADMIN_PASSWORD was rotated but the existing
+    # .opendistro_security index still has the old hash. In both cases the
+    # opensearch healthcheck above requires a 200 with the CURRENT password and
+    # will never report healthy — but the security index is never re-bootstrapped
+    # on its own, so security-init never runs to fix it either. Dependents gated
+    # on service_healthy then wait forever.
+    # Do NOT "fix" this by relaxing the opensearch healthcheck to also accept
+    # 401 — that would let dependents start against a mis-credentialed cluster,
+    # which is the exact failure mode the healthcheck comment above already
+    # exists to prevent. `deploy.sh start`/`deploy.sh repair` instead call
+    # repair_security_credentials_if_needed(), which probes for a definitive
+    # 401 (fresh bootstrap or drift, indistinguishable and handled identically)
+    # and re-runs security-init directly (--no-deps, bypassing this gate),
+    # because securityadmin.sh authenticates via the admin mTLS client cert,
+    # not the REST password, so it works even while the cluster is "unhealthy"
+    # by basic-auth standards.
     depends_on:
       suru.t3.datalake.opensearch:
         condition: service_healthy
@@ -438,7 +476,7 @@ services:
 
   # ── OpenSearch Dashboards ────────────────────────────────────────────────────
   suru.t3.datalake.dashboards:
-    image: opensearchproject/opensearch-dashboards:2.19.5@sha256:5d0b949a4ebe8d40e1b0ecf7f0125ec64afc80f9bff77bf7cb9e897bd8552c16
+    image: opensearchproject/opensearch-dashboards:3.7.0@sha256:ad707f8c85abe5164b10a3277ebc3e7ff2a7034f72898ae0be7371133770151d
     container_name: suru.t3.datalake.dashboards
     hostname: suru-t3-datalake-dashboards
     <<: [*restart-unless-stopped, *platform-default]
@@ -503,6 +541,114 @@ services:
           memory: 1G
         reservations:
           memory: 256M
+
+  # ── Security Analytics Init ──────────────────────────────────────────────────
+  # Idempotent import-only provisioner for OpenSearch Security Analytics:
+  # custom log types, the headline correlation rule, and the email trigger
+  # action's Notifications-plugin channels. Detector import is STUBBED pending
+  # an upstream OpenSearch custom-rule-create bug — see
+  # tier3-core/docs/security-analytics.md and apply-security-analytics.sh's
+  # own header comment.
+  #
+  # Image choice: apply-security-analytics.sh requires bash (per
+  # bash-standards), which curlimages/curl (used by the sibling *-init
+  # services above) does not ship. Rather than introduce a new image or run
+  # `apk add bash` at container start (the exact anti-pattern that caused the
+  # Tier 4 frontdoor proxy crash-loop — see project memory
+  # [[feedback-frontdoor-proxy-apk-crash]]), this service reuses the
+  # already-pinned, already-trusted opensearchproject/opensearch:3.7.0 image,
+  # which ships bash + curl + awk + sed out of the box.
+  #
+  # Gated behind the "init" profile — deploy.sh triggers it explicitly with
+  # --profile init after ism-policy-init.
+  # Run manually: docker compose --profile init run --rm suru.t3.datalake.securityanalytics-init
+  suru.t3.datalake.securityanalytics-init:
+    image: opensearchproject/opensearch:3.7.0@sha256:123e6591a47b1d54686890551bdb35739c85193ecded381219fc9e059e18128f
+    container_name: suru.t3.datalake.securityanalytics-init
+    <<: *platform-default
+    restart: "no"
+    profiles: [init]
+    depends_on:
+      suru.t3.datalake.ism-policy-init:
+        condition: service_completed_successfully
+    environment:
+      OS_HOST: suru-t3-datalake-opensearch
+      OS_PORT: "9200"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+      LOGTYPES_DIR: /config/field-mappings
+      DETECTORS_DIR: /config/detectors
+      CORRELATIONS_DIR: /config/correlation-rules
+      ACTIONS_DIR: /config/actions
+      SECURITY_ANALYTICS_SMTP_HOST: "${SECURITY_ANALYTICS_SMTP_HOST:-}"
+      SECURITY_ANALYTICS_SMTP_PORT: "${SECURITY_ANALYTICS_SMTP_PORT:-587}"
+      SECURITY_ANALYTICS_SMTP_METHOD: "${SECURITY_ANALYTICS_SMTP_METHOD:-start_tls}"
+      SECURITY_ANALYTICS_SMTP_FROM: "${SECURITY_ANALYTICS_SMTP_FROM:-siem@suru.local}"
+      SECURITY_ANALYTICS_ALERT_EMAIL_TO: "${SECURITY_ANALYTICS_ALERT_EMAIL_TO:-}"
+      SECURITY_ANALYTICS_ALERT_EMAIL_CC: "${SECURITY_ANALYTICS_ALERT_EMAIL_CC:-}"
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - ../../config/opensearch/security-analytics/detectors:/config/detectors:ro
+      - ../../config/opensearch/security-analytics/correlation-rules:/config/correlation-rules:ro
+      - ../../config/opensearch/security-analytics/actions:/config/actions:ro
+      - ../../../tier2-telemetry/opensearch/field-mappings:/config/field-mappings:ro
+      - ../../scripts/apply-security-analytics.sh:/apply-security-analytics.sh:ro
+    entrypoint: ["/bin/bash", "/apply-security-analytics.sh"]
+    networks:
+      - datalake-internal
+    logging: *default-logging
+
+  # ── Threat Intel Init ─────────────────────────────────────────────────────────
+  # Pushes STIX2 threat-intel bundles into OpenSearch Security Analytics'
+  # threat-intel-source ingestion. STRUCTURE ONLY — apply-threat-intel.sh's
+  # actual API call is commented out pending T0a/T7 confirmation of the live
+  # threat-intel-source endpoint shape (not yet probed this session; see
+  # apply-threat-intel.sh's own header note and the [MISSING REFERENCE] tag
+  # it carries). This container runs safely today: it walks the STIX2 bundle
+  # directory and logs what it WOULD apply, then exits 0 — it never calls a
+  # live endpoint until that follow-up probe lands.
+  #
+  # Image choice: same rationale as securityanalytics-init above (bash
+  # requirement, no runtime package installation).
+  #
+  # Gated behind the "init" profile — deploy.sh triggers it explicitly with
+  # --profile init after securityanalytics-init.
+  # Run manually: docker compose --profile init run --rm suru.t3.datalake.ti-init
+  suru.t3.datalake.ti-init:
+    image: opensearchproject/opensearch:3.7.0@sha256:123e6591a47b1d54686890551bdb35739c85193ecded381219fc9e059e18128f
+    container_name: suru.t3.datalake.ti-init
+    <<: *platform-default
+    restart: "no"
+    profiles: [init]
+    depends_on:
+      suru.t3.datalake.securityanalytics-init:
+        condition: service_completed_successfully
+    environment:
+      OS_HOST: suru-t3-datalake-opensearch
+      OS_PORT: "9200"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+      STIX2_DIR: /config/threat-intel/stix2
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - ../../../tier2-telemetry/threat-intel/stix2:/config/threat-intel/stix2:ro
+      - ../../scripts/apply-threat-intel.sh:/apply-threat-intel.sh:ro
+    entrypoint: ["/bin/bash", "/apply-threat-intel.sh"]
+    networks:
+      - datalake-internal
+    logging: *default-logging
 
   # ── Dashboard Importer ───────────────────────────────────────────────────────
   # Gated behind the "init" profile — compose up -d does NOT start it.
