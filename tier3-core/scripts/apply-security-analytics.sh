@@ -49,6 +49,16 @@
 #      tier2-telemetry/opensearch/actions/README.md. All three are logged for
 #      operator visibility only.
 #
+# *** ONGOING OPERATIONAL DEPENDENCY: alias rotation ***
+# This script creates index aliases (e.g. suru-zeek-current, suru-suricata-current)
+# as part of its one-time provisioning. Those aliases must be rotated DAILY at
+# midnight UTC so detectors continue to query today's dated index. Without
+# rotation, all detectors silently query yesterday's index and produce no alerts.
+#
+# Action: schedule tier3-core/scripts/rotate-sa-aliases.sh as a daily cron job
+# at 00:10 UTC on the SIEM Docker host. See that script's header for examples.
+# Verification: _cat/aliases/suru-zeek-current,suru-suricata-current?v
+#
 # Wired in by: tier3-core/scripts/deploy.sh (datalake/opensearch group,
 #   suru.t3.datalake.securityanalytics-init, after ism-policy-init).
 # =============================================================================

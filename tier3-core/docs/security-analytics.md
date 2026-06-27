@@ -9,6 +9,44 @@ independent live confirmation here.
 
 `$PASS` below = the value of `OPENSEARCH_INITIAL_ADMIN_PASSWORD` in `tier3-core/.env`.
 
+---
+
+## Operational Requirements — read before assuming detection is active
+
+Security Analytics detection depends on a **daily operational task** that is
+separate from the one-time `apply-security-analytics.sh` provisioning step.
+
+### Alias rotation — required for functional detection
+
+Detectors query OpenSearch through stable index aliases
+(`suru-zeek-current`, `suru-suricata-current`) rather than wildcard patterns
+or dated index names. Logstash rolls to a new dated index each midnight UTC
+(`suru-<type>-YYYY.MM.dd`). Unless the alias is rotated to point at the new
+index, **all detectors will query yesterday's index and produce no alerts on
+today's data**.
+
+**Action required:** schedule `tier3-core/scripts/rotate-sa-aliases.sh` to
+run daily at 00:10 UTC on the SIEM Docker host.
+
+```bash
+# Quick manual check — do the aliases point to today's index?
+docker exec suru.t3.datalake.opensearch \
+  curl -sk -u admin:$PASS \
+  "https://localhost:9200/_cat/aliases/suru-zeek-current,suru-suricata-current?v"
+```
+
+If either alias points to a date before today, run the rotation manually:
+
+```bash
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<password> \
+  bash tier3-core/scripts/rotate-sa-aliases.sh --verbose
+```
+
+See `tier3-core/scripts/rotate-sa-aliases.sh` header for cron setup
+(`/etc/cron.d` and `crontab -e` examples).
+
+---
+
 ## Plugin installed (confirmed)
 
 ```bash
