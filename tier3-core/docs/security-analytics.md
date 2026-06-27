@@ -9,6 +9,44 @@ independent live confirmation here.
 
 `$PASS` below = the value of `OPENSEARCH_INITIAL_ADMIN_PASSWORD` in `tier3-core/.env`.
 
+---
+
+## Operational Requirements — read before assuming detection is active
+
+Security Analytics detection depends on a **daily operational task** that is
+separate from the one-time `apply-security-analytics.sh` provisioning step.
+
+### Alias rotation — required for functional detection
+
+Detectors query OpenSearch through stable index aliases
+(`suru-zeek-current`, `suru-suricata-current`) rather than wildcard patterns
+or dated index names. Logstash rolls to a new dated index each midnight UTC
+(`suru-<type>-YYYY.MM.dd`). Unless the alias is rotated to point at the new
+index, **all detectors will query yesterday's index and produce no alerts on
+today's data**.
+
+**Action required:** schedule `tier3-core/scripts/rotate-sa-aliases.sh` to
+run daily at 00:10 UTC on the SIEM Docker host.
+
+```bash
+# Quick manual check — do the aliases point to today's index?
+docker exec suru.t3.datalake.opensearch \
+  curl -sk -u admin:$PASS \
+  "https://localhost:9200/_cat/aliases/suru-zeek-current,suru-suricata-current?v"
+```
+
+If either alias points to a date before today, run the rotation manually:
+
+```bash
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<password> \
+  bash tier3-core/scripts/rotate-sa-aliases.sh --verbose
+```
+
+See `tier3-core/scripts/rotate-sa-aliases.sh` header for cron setup
+(`/etc/cron.d` and `crontab -e` examples).
+
+---
+
 ## Plugin installed (confirmed)
 
 ```bash
@@ -163,9 +201,11 @@ plain **index alias** with no special characters
 `suru-<type>-*` wildcard the rendered JSON's `index_pattern` field carries.
 This script creates one alias per log type (e.g. `suru-zeek-conn-current` →
 the most recent `suru-zeek-YYYY.MM.dd` index) before creating any detector
-that targets it. This is a real operational gap (date-rolled indices need
-periodic alias rotation) — flagged as `[STUB: alias rotation]` below; the
-script creates the alias against today's concrete index at apply-time only.
+that targets it. Alias rotation is automated by `tier3-core/scripts/rotate-sa-aliases.sh`.
+Run it once manually after each midnight UTC rollover, or schedule it as a
+daily system cron job on the SIEM host (see that script's header for
+`/etc/cron.d` and `crontab -e` setup examples). The script is idempotent —
+safe to re-run if today's alias is already current.
 
 ### Constraint 2 — rule compatibility is enforced by `category` vs `detector_type`
 

@@ -180,6 +180,52 @@ deploy.sh
 
 ---
 
+## Ongoing Operations
+
+Some capabilities require scheduled maintenance tasks that run on the SIEM
+host after the initial deployment. Without these, the relevant features
+silently degrade.
+
+### Daily: Security Analytics index alias rotation (00:10 UTC)
+
+Security Analytics detectors query data through stable index aliases
+(`suru-zeek-current`, `suru-suricata-current`). Logstash rolls to a new
+dated index each midnight UTC. The aliases must be rotated daily or detectors
+query stale data and produce no alerts.
+
+**Schedule on the SIEM host:**
+
+```bash
+# /etc/cron.d/suru-alias-rotate  (runs as root, 00:10 UTC)
+10 0 * * * root \
+  OPENSEARCH_INITIAL_ADMIN_PASSWORD="$(cat /etc/suru/opensearch-pass)" \
+  /opt/suru/tier3-core/scripts/rotate-sa-aliases.sh \
+  >> /var/log/suru-alias-rotate.log 2>&1
+```
+
+Or as a user crontab entry (`crontab -e`):
+```
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<password>
+10 0 * * * /opt/suru/tier3-core/scripts/rotate-sa-aliases.sh >> /var/log/suru-alias-rotate.log 2>&1
+```
+
+**Verify aliases are current:**
+```bash
+docker exec suru.t3.datalake.opensearch \
+  curl -sk -u admin:$PASS \
+  "https://localhost:9200/_cat/aliases/suru-zeek-current,suru-suricata-current?v"
+```
+
+Both aliases must show today's `suru-<type>-YYYY.MM.dd` index. If either is
+stale, run `bash tier3-core/scripts/rotate-sa-aliases.sh --verbose` manually.
+The script is idempotent — safe to re-run at any time.
+
+See `tier3-core/scripts/rotate-sa-aliases.sh` for full options and
+`tier3-core/docs/security-analytics.md` §"Operational Requirements" for
+background on why this is necessary.
+
+---
+
 ## Environment Variables
 
 See [`.env.example`](../.env.example) for the full annotated list.
